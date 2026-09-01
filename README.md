@@ -1,8 +1,8 @@
 # tor
 
-A minimal Tor proxy container: SOCKS5, ControlPort, and Hidden Service
-support, all toggled at runtime via environment variables — one image,
-no build-time variants.
+A minimal Tor proxy container: SOCKS5, ControlPort, Hidden Service,
+exit/entry node selection, and bridges — all toggled at runtime via
+environment variables — one image, no build-time variants.
 
 Built from Alpine, base image pinned by digest (see [`docker-bake.hcl`](./docker-bake.hcl)).
 
@@ -20,38 +20,77 @@ docker compose up tor
 ```
 
 Starts a plain SOCKS5 proxy on `localhost:9050`. See [`docker-compose.yml`](./docker-compose.yml)
-for the full set of example services, including a hidden-service example
+for the full set of example services, including exit-node selection
+(`tor-exit-select`), bridges (`tor-bridges`), and a hidden-service example
 (`tor-hs`).
 
 ## Runtime configuration
 
 Nothing is baked into the image at build time except package versions —
-what actually runs (SOCKS only, hidden service only, or both together) is
-decided by environment variables read by [`entrypoint.sh`](./Tor/entrypoint.sh)
-on container start, which writes `/etc/tor/torrc` accordingly.
+what actually runs (SOCKS only, hidden service only, node selection,
+bridges, or any combination) is decided by environment variables read by
+[`entrypoint.sh`](./Tor/entrypoint.sh) on container start, which writes
+`/etc/tor/torrc` accordingly.
+
+> **Breaking change:** every runtime-config variable now uses a `TORRC_`
+> prefix (e.g. `ENABLE_SOCKS` → `TORRC_ENABLE_SOCKS`), namespacing them
+> clearly as "things that end up in torrc". There is no back-compat shim
+> for the old unprefixed names — update your env/Compose files.
+
+### SOCKS / ControlPort / Hidden Service
 
 | Variable | Default | Description |
 |---|---|---|
-| `ENABLE_SOCKS` | `false` | Enable the SOCKS5 proxy |
-| `SOCKS_PORT` | `9050` | SOCKS5 listen port |
-| `ENABLE_CONTROL` | `false` | Enable the Tor ControlPort (cookie auth only — see [Security notes](#security-notes)) |
-| `CONTROL_PORT` | `9051` | ControlPort listen port |
-| `ENABLE_HS` | `false` | Enable the Hidden Service |
-| `HS_PORT` / `HS_TARGET` | `80` / `127.0.0.1:80` | Single-port hidden service shorthand |
-| `HS_PORTS` | *(unset)* | Comma-separated `<virtport>:<target>` pairs for a multi-port hidden service, e.g. `80:10.2.0.2:80,443:10.2.0.2:443`. Takes priority over `HS_PORT`/`HS_TARGET` when set. |
-| `HS_SECRET_KEY_FILE` | `/run/secrets/tor_hs_ed25519_secret_key` | Path to an existing `hs_ed25519_secret_key` to seed into the hidden service directory, so the container reuses a known onion address instead of generating a new one on first start |
+| `TORRC_ENABLE_SOCKS` | `false` | Enable the SOCKS5 proxy |
+| `TORRC_SOCKS_PORT` | `9050` | SOCKS5 listen port |
+| `TORRC_ENABLE_CONTROL` | `false` | Enable the Tor ControlPort (cookie auth only — see [Security notes](#security-notes)) |
+| `TORRC_CONTROL_PORT` | `9051` | ControlPort listen port |
+| `TORRC_ENABLE_HS` | `false` | Enable the Hidden Service |
+| `TORRC_HS_PORT` / `TORRC_HS_TARGET` | `80` / `127.0.0.1:80` | Single-port hidden service shorthand |
+| `TORRC_HS_PORTS` | *(unset)* | Comma-separated `<virtport>:<target>` pairs for a multi-port hidden service, e.g. `80:10.2.0.2:80,443:10.2.0.2:443`. Takes priority over `TORRC_HS_PORT`/`TORRC_HS_TARGET` when set. |
+| `TORRC_HS_SECRET_KEY_FILE` | `/run/secrets/tor_hs_ed25519_secret_key` | Path to an existing `hs_ed25519_secret_key` to seed into the hidden service directory, so the container reuses a known onion address instead of generating a new one on first start |
+
+### Exit / entry / excluded node selection
+
+| Variable | Default | Description |
+|---|---|---|
+| `TORRC_EXIT_NODES` | *(unset)* | Restrict exit nodes, e.g. `{us},{de}` → `ExitNodes {us},{de}` |
+| `TORRC_ENTRY_NODES` | *(unset)* | Restrict entry/guard nodes, e.g. `{fr}` → `EntryNodes {fr}` |
+| `TORRC_EXCLUDE_NODES` | *(unset)* | Exclude nodes at any hop, e.g. `{ru},{cn}` → `ExcludeNodes {ru},{cn}` |
+| `TORRC_EXCLUDE_EXIT_NODES` | *(unset)* | Exclude specific exit nodes, e.g. `{ru}` → `ExcludeExitNodes {ru}` |
+| `TORRC_STRICT_NODES` | `false` | When `true`, Tor refuses to build a circuit at all rather than fall back outside the `*_NODES` lists above (`StrictNodes 1`). Only meaningful combined with one of the vars above. |
+
+Country codes use Tor's `{cc}` syntax and can be combined/comma-separated,
+e.g. `TORRC_EXIT_NODES="{us},{nl},{ch}"`. See the [Tor manual's node
+selection section](https://2019.www.torproject.org/docs/tor-manual.html.en)
+for the full expression syntax (individual fingerprints, `{cc}` country
+codes, etc.).
+
+### Bridges / pluggable transports
+
+The image already ships `lyrebird` (obfs4) — these variables activate it.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TORRC_ENABLE_BRIDGES` | `false` | Enable bridge mode (`UseBridges 1`) |
+| `TORRC_BRIDGE_LINES` | *(unset)* | One or more `Bridge` lines, newline-separated (a YAML block scalar in Compose) or using the literal `\n` sequence as a separator for single-line sources. Each line is written verbatim after `Bridge `, e.g. `obfs4 192.0.2.1:443 FINGERPRINT cert=... iat-mode=0`. |
+| `TORRC_BRIDGE_TRANSPORT` | `obfs4` | Which `ClientTransportPlugin` line to emit. Set to an empty string to skip emitting one (e.g. for vanilla, non-pluggable-transport bridges). |
+| `TORRC_LYREBIRD_PATH` | `/usr/bin/lyrebird` | Path to the pluggable-transport binary used in the `ClientTransportPlugin` line |
+
+Get bridge lines from [bridges.torproject.org](https://bridges.torproject.org)
+or by emailing `bridges@torproject.org`.
 
 ### Multi-port hidden service
 
 Tor expresses multiple ports on one onion address as repeated
 `HiddenServicePort` lines under a single `HiddenServiceDir` — there's no
 single-line list syntax in `torrc`. `entrypoint.sh` builds that from
-`HS_PORTS`:
+`TORRC_HS_PORTS`:
 
 ```yaml
 environment:
-  ENABLE_HS: "true"
-  HS_PORTS: "80:10.2.0.2:80,443:10.2.0.2:443"
+  TORRC_ENABLE_HS: "true"
+  TORRC_HS_PORTS: "80:10.2.0.2:80,443:10.2.0.2:443"
 ```
 
 produces:
@@ -91,12 +130,15 @@ service in `docker-compose.yml`.
 
 ## Security notes
 
-- `ENABLE_CONTROL=true` enables `CookieAuthentication` only — no
+- `TORRC_ENABLE_CONTROL=true` enables `CookieAuthentication` only — no
   password auth is configured. Don't expose the ControlPort beyond
   `localhost`/a trusted network without adding `HashedControlPassword`
   (via `tor --hash-password`) first.
 - The Hidden Service directory is set to `700` and its key file to
   `600`, owned by the `tor` user, on every container start.
+- `TORRC_STRICT_NODES=true` trades availability for guarantee: Tor will
+  refuse to build circuits at all if it can't satisfy your `*_NODES`
+  constraints, rather than silently falling back to unrestricted routing.
 
 ## Building
 
@@ -150,7 +192,7 @@ at runtime rather than hardcoded.
 .
 ├── Tor/
 │   ├── Dockerfile        # base + tor stages
-│   └── entrypoint.sh     # writes torrc from env vars, execs tor
+│   └── entrypoint.sh     # writes torrc from TORRC_* env vars, execs tor
 ├── docker-bake.hcl       # build definitions (targets, labels, base pin)
 ├── bake.sh               # wraps buildx bake, injects GIT_SHA/GIT_REF
 ├── docker-compose.yml    # example services: plain SOCKS5, hidden service

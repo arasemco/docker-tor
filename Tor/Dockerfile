@@ -23,6 +23,10 @@ ARG TOR_VERSION
 ARG NYX_VERSION
 ARG LYREBIRD_VERSION
 
+ENV TOR_VERSION=${TOR_VERSION} \
+    NYX_VERSION=${NYX_VERSION} \
+    LYREBIRD_VERSION=${LYREBIRD_VERSION}
+
 RUN apk add --no-cache \
         curl \
         bash \
@@ -39,38 +43,62 @@ CMD ["tor"]
 
 
 # =============================================================================
-# tor — the single runtime stage. SOCKS/control/hidden-service are all
-# runtime toggles (entrypoint.sh writes torrc from env), so "socks",
-# "hs", and "all" are the same image with different defaults/ports —
-# no need for separate build stages per variant.
+# tor — the single runtime stage. SOCKS/control/hidden-service/node-
+# selection/bridges are all runtime toggles (entrypoint.sh writes torrc
+# from TORRC_* env vars), so every deployment shape is the same image
+# with different defaults/ports at `docker run` time, not different
+# build targets.
+#
+# All runtime-config args/env below are prefixed TORRC_ to namespace them
+# as "things that end up in torrc" — this matches entrypoint.sh's env
+# vars exactly, so a build-time ARG default flows straight through to
+# the same-named runtime ENV.
 # =============================================================================
 FROM base AS tor
 
 ARG TOR_VERSION
-ARG ENABLE_SOCKS=false
-ARG ENABLE_CONTROL=false
-ARG ENABLE_HS=false
-ARG SOCKS_PORT=9050
-ARG CONTROL_PORT=9051
-ARG HS_PORT=80
-ARG HS_TARGET=127.0.0.1:80
-ARG HS_PORTS=""
+ARG TORRC_ENABLE_SOCKS=false
+ARG TORRC_ENABLE_CONTROL=false
+ARG TORRC_ENABLE_HS=false
+ARG TORRC_SOCKS_PORT=9050
+ARG TORRC_CONTROL_PORT=9051
+ARG TORRC_HS_PORT=80
+ARG TORRC_HS_TARGET=127.0.0.1:80
+ARG TORRC_HS_PORTS=""
+ARG TORRC_EXIT_NODES=""
+ARG TORRC_ENTRY_NODES=""
+ARG TORRC_EXCLUDE_NODES=""
+ARG TORRC_EXCLUDE_EXIT_NODES=""
+ARG TORRC_STRICT_NODES=false
+ARG TORRC_ENABLE_BRIDGES=false
+ARG TORRC_BRIDGE_LINES=""
+ARG TORRC_BRIDGE_TRANSPORT=obfs4
+ARG TORRC_LYREBIRD_PATH=/usr/bin/lyrebird
 
 ENV TOR_VERSION=${TOR_VERSION} \
-    ENABLE_SOCKS=${ENABLE_SOCKS} \
-    ENABLE_CONTROL=${ENABLE_CONTROL} \
-    ENABLE_HS=${ENABLE_HS} \
-    SOCKS_PORT=${SOCKS_PORT} \
-    CONTROL_PORT=${CONTROL_PORT} \
-    HS_PORT=${HS_PORT} \
-    HS_TARGET=${HS_TARGET} \
-    HS_PORTS=${HS_PORTS} \
-    HS_SECRET_KEY_FILE=/run/secrets/tor_hs_ed25519_secret_key
+    TORRC_ENABLE_SOCKS=${TORRC_ENABLE_SOCKS} \
+    TORRC_ENABLE_CONTROL=${TORRC_ENABLE_CONTROL} \
+    TORRC_ENABLE_HS=${TORRC_ENABLE_HS} \
+    TORRC_SOCKS_PORT=${TORRC_SOCKS_PORT} \
+    TORRC_CONTROL_PORT=${TORRC_CONTROL_PORT} \
+    TORRC_HS_PORT=${TORRC_HS_PORT} \
+    TORRC_HS_TARGET=${TORRC_HS_TARGET} \
+    TORRC_HS_PORTS=${TORRC_HS_PORTS} \
+    TORRC_HS_SECRET_KEY_FILE=/run/secrets/tor_hs_ed25519_secret_key \
+    TORRC_EXIT_NODES=${TORRC_EXIT_NODES} \
+    TORRC_ENTRY_NODES=${TORRC_ENTRY_NODES} \
+    TORRC_EXCLUDE_NODES=${TORRC_EXCLUDE_NODES} \
+    TORRC_EXCLUDE_EXIT_NODES=${TORRC_EXCLUDE_EXIT_NODES} \
+    TORRC_STRICT_NODES=${TORRC_STRICT_NODES} \
+    TORRC_ENABLE_BRIDGES=${TORRC_ENABLE_BRIDGES} \
+    TORRC_BRIDGE_LINES=${TORRC_BRIDGE_LINES} \
+    TORRC_BRIDGE_TRANSPORT=${TORRC_BRIDGE_TRANSPORT} \
+    TORRC_LYREBIRD_PATH=${TORRC_LYREBIRD_PATH}
 
-EXPOSE ${SOCKS_PORT} ${CONTROL_PORT}
+EXPOSE ${TORRC_SOCKS_PORT} ${TORRC_CONTROL_PORT}
 
 HEALTHCHECK --interval=300s --timeout=15s --start-period=60s --start-interval=10s \
-    CMD sh -c '[ "$ENABLE_SOCKS" != "true" ] || curl -x socks5h://127.0.0.1:${SOCKS_PORT} "https://check.torproject.org/api/ip" | grep -qm1 "\"IsTor\"[[:space:]]*:[[:space:]]*true"'
+    CMD sh -c '[ "$TORRC_ENABLE_SOCKS" != "true" ] || curl -x socks5h://127.0.0.1:${TORRC_SOCKS_PORT} "https://check.torproject.org/api/ip" | grep -qm1 "\"IsTor\"[[:space:]]*:[[:space:]]*true"'
 
 # tor user/group come from the apk "tor" package; drop root only when
 # we don't need to chown the HS/data dir at startup as root first —

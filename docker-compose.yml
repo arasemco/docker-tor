@@ -4,21 +4,25 @@
 #   bash bake.sh --push         # ...and pushes it to REGISTRY
 #   docker compose up tor       # run it
 #
-# SOCKS5, ControlPort, and the Hidden Service are all runtime toggles
-# (entrypoint.sh writes torrc from these env vars at container start) —
-# not separate images. Enable whichever you need per-deployment; all
-# default to "false"/off.
+# SOCKS5, ControlPort, Hidden Service, exit/entry node selection, and
+# bridges are all runtime toggles (entrypoint.sh writes torrc from these
+# env vars at container start) — not separate images. Enable whichever
+# you need per-deployment.
 #
-# Multi-port hidden service: HS_PORTS is a comma-separated list of
+# All runtime-config vars use a TORRC_ prefix (e.g. TORRC_ENABLE_SOCKS,
+# TORRC_EXIT_NODES) — see Tor/entrypoint.sh's header comment for the
+# full reference.
+#
+# Multi-port hidden service: TORRC_HS_PORTS is a comma-separated list of
 # "<virtport>:<target>" pairs, e.g. "80:10.2.0.2:80,443:10.2.0.2:443" —
-# see the "tor-hs" example service below. HS_PORT/HS_TARGET (singular)
-# still work as shorthand for a single port; HS_PORTS takes priority
-# when both are set.
+# see the "tor-hs" example service below. TORRC_HS_PORT/TORRC_HS_TARGET
+# (singular) still work as shorthand for a single port; TORRC_HS_PORTS
+# takes priority when both are set.
 #
 # Secret-seeded key: mount an existing hs_ed25519_secret_key via
 # `secrets:` at /run/secrets/tor_hs_ed25519_secret_key (or override
-# HS_SECRET_KEY_FILE) to reuse a known onion address instead of letting
-# Tor generate a new one on first start.
+# TORRC_HS_SECRET_KEY_FILE) to reuse a known onion address instead of
+# letting Tor generate a new one on first start.
 
 services:
   # Plain SOCKS5 proxy — no hidden service.
@@ -27,17 +31,60 @@ services:
     hostname: tor
     restart: unless-stopped
     environment:
-      ENABLE_SOCKS: "true"
-      ENABLE_CONTROL: "false"
-      ENABLE_HS: "false"
-      SOCKS_PORT: "9050"
-      CONTROL_PORT: "9051"
+      TORRC_ENABLE_SOCKS: "true"
+      TORRC_ENABLE_CONTROL: "false"
+      TORRC_ENABLE_HS: "false"
+      TORRC_SOCKS_PORT: "9050"
+      TORRC_CONTROL_PORT: "9051"
     ports:
       - "9050:9050"
-      # Uncomment if ENABLE_CONTROL=true:
+      # Uncomment if TORRC_ENABLE_CONTROL=true:
       #- "9051:9051"
     volumes:
       - ./data/tor:/var/lib/tor
+
+  # SOCKS5 proxy restricted to exit nodes in specific countries, refusing
+  # to fall back elsewhere (StrictNodes). Also excludes a couple of
+  # countries outright regardless of the ExitNodes allow-list, and avoids
+  # routing through Russia at any hop (entry, middle, or exit).
+  tor-exit-select:
+    image: ghcr.io/arasemco/tor:latest
+    hostname: tor-exit-select
+    restart: unless-stopped
+    environment:
+      TORRC_ENABLE_SOCKS: "true"
+      TORRC_SOCKS_PORT: "9050"
+      TORRC_EXIT_NODES: "{us},{nl},{ch}"
+      TORRC_EXCLUDE_EXIT_NODES: "{ru},{by}"
+      TORRC_EXCLUDE_NODES: "{ru}"
+      TORRC_STRICT_NODES: "true"
+    ports:
+      - "9060:9050"
+    volumes:
+      - ./data/tor-exit-select:/var/lib/tor
+
+  # SOCKS5 proxy over obfs4 bridges (censorship-circumvention scenario),
+  # using the lyrebird pluggable-transport binary already built into the
+  # image. Replace the placeholder bridge line with real bridge lines,
+  # e.g. from https://bridges.torproject.org.
+  tor-bridges:
+    image: ghcr.io/arasemco/tor:latest
+    hostname: tor-bridges
+    restart: unless-stopped
+    environment:
+      TORRC_ENABLE_SOCKS: "true"
+      TORRC_SOCKS_PORT: "9050"
+      TORRC_ENABLE_BRIDGES: "true"
+      TORRC_BRIDGE_TRANSPORT: "obfs4"
+      # Multiple bridges: one per line (YAML block scalar) or separate
+      # with the literal characters \n if your env source can't carry
+      # real newlines.
+      TORRC_BRIDGE_LINES: |
+        obfs4 192.0.2.1:443 0000000000000000000000000000000000000A cert=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA iat-mode=0
+    ports:
+      - "9070:9050"
+    volumes:
+      - ./data/tor-bridges:/var/lib/tor
 
   # Hidden service on multiple ports, reusing a pre-existing onion key
   # from a Docker secret. Onion routing needs no host `ports:` mapping —
@@ -47,8 +94,8 @@ services:
     image: ghcr.io/arasemco/tor:latest
     restart: unless-stopped
     environment:
-      ENABLE_HS: "true"
-      HS_PORTS: "80:10.2.0.2:80,443:10.2.0.2:443"
+      TORRC_ENABLE_HS: "true"
+      TORRC_HS_PORTS: "80:10.2.0.2:80,443:10.2.0.2:443"
     secrets:
       - tor_hs_ed25519_secret_key
     volumes:
@@ -66,4 +113,4 @@ networks:
 
 secrets:
   tor_hs_ed25519_secret_key:
-    file: /path/to/onion/keys/hs_ed25519_secret_key
+    file: /path/to/onion/keys/folder/hs_ed25519_secret_key
