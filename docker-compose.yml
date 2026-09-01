@@ -1,0 +1,69 @@
+# Run the Tor proxy. Image is built with buildx bake (see docker-bake.hcl /
+# bake.sh), not compose build:
+#   bash bake.sh                # builds the tor image (default group)
+#   bash bake.sh --push         # ...and pushes it to REGISTRY
+#   docker compose up tor       # run it
+#
+# SOCKS5, ControlPort, and the Hidden Service are all runtime toggles
+# (entrypoint.sh writes torrc from these env vars at container start) —
+# not separate images. Enable whichever you need per-deployment; all
+# default to "false"/off.
+#
+# Multi-port hidden service: HS_PORTS is a comma-separated list of
+# "<virtport>:<target>" pairs, e.g. "80:10.2.0.2:80,443:10.2.0.2:443" —
+# see the "tor-hs" example service below. HS_PORT/HS_TARGET (singular)
+# still work as shorthand for a single port; HS_PORTS takes priority
+# when both are set.
+#
+# Secret-seeded key: mount an existing hs_ed25519_secret_key via
+# `secrets:` at /run/secrets/tor_hs_ed25519_secret_key (or override
+# HS_SECRET_KEY_FILE) to reuse a known onion address instead of letting
+# Tor generate a new one on first start.
+
+services:
+  # Plain SOCKS5 proxy — no hidden service.
+  tor:
+    image: ghcr.io/arasemco/tor:latest
+    hostname: tor
+    restart: unless-stopped
+    environment:
+      ENABLE_SOCKS: "true"
+      ENABLE_CONTROL: "false"
+      ENABLE_HS: "false"
+      SOCKS_PORT: "9050"
+      CONTROL_PORT: "9051"
+    ports:
+      - "9050:9050"
+      # Uncomment if ENABLE_CONTROL=true:
+      #- "9051:9051"
+    volumes:
+      - ./data/tor:/var/lib/tor
+
+  # Hidden service on multiple ports, reusing a pre-existing onion key
+  # from a Docker secret. Onion routing needs no host `ports:` mapping —
+  # traffic reaches the service over the Tor network, not a published
+  # port — so nothing is exposed to the host here.
+  tor-hs:
+    image: ghcr.io/arasemco/tor:latest
+    restart: unless-stopped
+    environment:
+      ENABLE_HS: "true"
+      HS_PORTS: "80:10.2.0.2:80,443:10.2.0.2:443"
+    secrets:
+      - tor_hs_ed25519_secret_key
+    volumes:
+      - tor_etc:/etc/tor
+      - tor_var:/var/lib/tor
+    networks:
+      - frontend
+
+volumes:
+  tor_etc:
+  tor_var:
+
+networks:
+  frontend:
+
+secrets:
+  tor_hs_ed25519_secret_key:
+    file: /path/to/onion/keys/hs_ed25519_secret_key
