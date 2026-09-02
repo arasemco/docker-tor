@@ -13,6 +13,12 @@
 # TORRC_EXIT_NODES) — see Tor/entrypoint.sh's header comment for the
 # full reference.
 #
+# Privoxy (tor-privoxy service/image) is a SEPARATE build target/image —
+# an HTTP/HTTPS proxy front-end that forwards to a Tor SOCKS5 proxy over
+# the network, for clients that can't speak SOCKS directly. It does not
+# run Tor itself. Its own vars use a PRIVOXY_ prefix — see
+# Tor/privoxy-entrypoint.sh's header comment for the full reference.
+#
 # Multi-port hidden service: TORRC_HS_PORTS is a comma-separated list of
 # "<virtport>:<target>" pairs, e.g. "80:10.2.0.2:80,443:10.2.0.2:443" —
 # see the "tor-hs" example service below. TORRC_HS_PORT/TORRC_HS_TARGET
@@ -85,6 +91,30 @@ services:
       - "9070:9050"
     volumes:
       - ./data/tor-bridges:/var/lib/tor
+
+  # Privoxy front-end for the plain "tor" service above — gives HTTP/
+  # HTTPS-only clients (anything that can't speak SOCKS directly, e.g.
+  # some CLI tools, older apps) a plain http_proxy interface into Tor.
+  # This is a SEPARATE image (ghcr.io/arasemco/tor-privoxy), built from
+  # the "tor-privoxy" bake target — it does not run Tor itself, it
+  # forwards to the "tor" service's SOCKS port over the Compose network.
+  #
+  # Point clients at it with:
+  #   http_proxy=http://localhost:8118 https_proxy=http://localhost:8118
+  tor-privoxy:
+    image: ghcr.io/arasemco/tor-privoxy:latest
+    hostname: tor-privoxy
+    restart: unless-stopped
+    depends_on:
+      - tor
+    environment:
+      PRIVOXY_LISTEN_PORT: "8118"
+      PRIVOXY_TOR_SOCKS_HOST: "tor"
+      PRIVOXY_TOR_SOCKS_PORT: "9050"
+      PRIVOXY_FORWARD_DNS: "true"
+      PRIVOXY_ENABLE_FILTERS: "true"
+    ports:
+      - "8118:8118"
 
   # Hidden service on multiple ports, reusing a pre-existing onion key
   # from a Docker secret. Onion routing needs no host `ports:` mapping —
