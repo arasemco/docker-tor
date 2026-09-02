@@ -29,7 +29,7 @@
 // on each, but a build from either host can still push to the same
 // REGISTRY, so the two shouldn't be derived from one another.
 variable "REGISTRY"   { default = "ghcr.io/arasemco" }
-variable "SOURCE_URL" { default = "https://github.com/arasemco/tor" }
+variable "SOURCE_URL" { default = "https://github.com/arasemco/docker-tor" }
 
 // Static identity/provenance metadata, same across every build — grouped
 // into one map so oci_labels() can pull it all from a single

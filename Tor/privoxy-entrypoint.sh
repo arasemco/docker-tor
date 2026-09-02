@@ -19,6 +19,14 @@
 # convention used by entrypoint.sh, so it's clear at a glance which
 # config file/process a given env var feeds.
 #
+# NOTE on Alpine packaging: the privoxy apk package ships every stock
+# config/action/filter file with a ".new" suffix (default.filter.new,
+# default.action.new, etc.) rather than installing them live, so a fresh
+# container has no plain default.filter/default.action until this script
+# stages them (see the loop before write_config below). This is
+# Alpine-specific — other distros' privoxy packages install these files
+# directly under their real names.
+#
 # -----------------------------------------------------------------------
 # Variables
 # -----------------------------------------------------------------------
@@ -84,7 +92,6 @@ write_config() {
 
     echo "confdir /etc/privoxy" >> "${CONFIG}"
     echo "templdir /etc/privoxy/templates" >> "${CONFIG}"
-    echo "cgi-error-detail 1" >> "${CONFIG}"
 
     if [ "${PRIVOXY_ENABLE_LOGGING}" = "true" ]; then
         echo "logdir /var/log/privoxy" >> "${CONFIG}"
@@ -106,6 +113,15 @@ write_config() {
 }
 
 mkdir -p /etc/privoxy /var/log/privoxy
+
+for staged in /etc/privoxy/*.new; do
+    [ -e "${staged}" ] || continue
+    target="${staged%.new}"
+    if [ ! -e "${target}" ]; then
+        cp "${staged}" "${target}"
+    fi
+done
+
 chown -R privoxy:privoxy /etc/privoxy /var/log/privoxy 2>/dev/null || true
 
 write_config
