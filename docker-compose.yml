@@ -4,20 +4,24 @@
 #   bash bake.sh --push         # ...and pushes it to REGISTRY
 #   docker compose up tor       # run it
 #
+# ONE image now runs both Tor and (optionally) Privoxy, supervised
+# independently by s6-overlay — see Tor/Dockerfile and
+# Tor/services/{tor,privoxy}/run. This replaces the previous separate
+# "tor" + "tor-privoxy" images: Privoxy is now PRIVOXY_ENABLE, a runtime
+# toggle on the same image, not a second container to run. If tor
+# crashes, s6 restarts only tor inside the container; privoxy (if
+# enabled) keeps running and just fails to reach the SOCKS port until
+# tor's back up.
+#
 # SOCKS5, ControlPort, Hidden Service, exit/entry node selection, and
-# bridges are all runtime toggles (entrypoint.sh writes torrc from these
-# env vars at container start) — not separate images. Enable whichever
-# you need per-deployment.
+# bridges are all runtime toggles (the "tor" s6 service writes torrc from
+# these env vars at container start). All use a TORRC_ prefix — see
+# Tor/services/tor/run's header comment for the full reference.
 #
-# All runtime-config vars use a TORRC_ prefix (e.g. TORRC_ENABLE_SOCKS,
-# TORRC_EXIT_NODES) — see Tor/entrypoint.sh's header comment for the
-# full reference.
-#
-# Privoxy (tor-privoxy service/image) is a SEPARATE build target/image —
-# an HTTP/HTTPS proxy front-end that forwards to a Tor SOCKS5 proxy over
-# the network, for clients that can't speak SOCKS directly. It does not
-# run Tor itself. Its own vars use a PRIVOXY_ prefix — see
-# Tor/privoxy-entrypoint.sh's header comment for the full reference.
+# Privoxy vars use a PRIVOXY_ prefix — see Tor/services/privoxy/run's
+# header comment for the full reference. PRIVOXY_TOR_SOCKS_HOST defaults
+# to 127.0.0.1 since Privoxy now reaches Tor over loopback within the
+# same container, not over a Compose network by service name.
 #
 # Multi-port hidden service: TORRC_HS_PORTS is a comma-separated list of
 # "<virtport>:<target>" pairs, e.g. "80:10.2.0.2:80,443:10.2.0.2:443" —
@@ -31,7 +35,7 @@
 # letting Tor generate a new one on first start.
 
 services:
-  # Plain SOCKS5 proxy — no hidden service.
+  # Plain SOCKS5 proxy — no hidden service, no Privoxy.
   tor:
     image: ghcr.io/arasemco/tor:latest
     hostname: tor
@@ -42,12 +46,38 @@ services:
       TORRC_ENABLE_HS: "false"
       TORRC_SOCKS_PORT: "9050"
       TORRC_CONTROL_PORT: "9051"
+      PRIVOXY_ENABLE: "false"
     ports:
       - "9050:9050"
       # Uncomment if TORRC_ENABLE_CONTROL=true:
       #- "9051:9051"
     volumes:
       - ./data/tor:/var/lib/tor
+
+  # SOCKS5 proxy PLUS a Privoxy HTTP/HTTPS front-end in the same
+  # container — for clients that can't speak SOCKS directly (some CLI
+  # tools, older apps). Both processes are supervised independently by
+  # s6-overlay: if one crashes, only that one restarts.
+  #
+  # Point HTTP/HTTPS clients at:
+  #   http_proxy=http://localhost:8118 https_proxy=http://localhost:8118
+  tor-privoxy:
+    image: ghcr.io/arasemco/tor:latest
+    hostname: tor-privoxy
+    restart: unless-stopped
+    environment:
+      TORRC_ENABLE_SOCKS: "true"
+      TORRC_SOCKS_PORT: "9050"
+      PRIVOXY_ENABLE: "true"
+      PRIVOXY_LISTEN_PORT: "8118"
+      PRIVOXY_TOR_SOCKS_PORT: "9050"
+      PRIVOXY_FORWARD_DNS: "true"
+      PRIVOXY_ENABLE_FILTERS: "true"
+#    ports:
+#      - "9051:9050"
+#      - "8118:8118"
+    volumes:
+      - ./data/tor-privoxy:/var/lib/tor
 
   # SOCKS5 proxy restricted to exit nodes in specific countries, refusing
   # to fall back elsewhere (StrictNodes). Also excludes a couple of
@@ -64,6 +94,7 @@ services:
       TORRC_EXCLUDE_EXIT_NODES: "{ru},{by}"
       TORRC_EXCLUDE_NODES: "{ru}"
       TORRC_STRICT_NODES: "true"
+      PRIVOXY_ENABLE: "false"
     ports:
       - "9060:9050"
     volumes:
@@ -87,34 +118,11 @@ services:
       # real newlines.
       TORRC_BRIDGE_LINES: |
         obfs4 192.0.2.1:443 0000000000000000000000000000000000000A cert=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA iat-mode=0
+      PRIVOXY_ENABLE: "false"
     ports:
       - "9070:9050"
     volumes:
       - ./data/tor-bridges:/var/lib/tor
-
-  # Privoxy front-end for the plain "tor" service above — gives HTTP/
-  # HTTPS-only clients (anything that can't speak SOCKS directly, e.g.
-  # some CLI tools, older apps) a plain http_proxy interface into Tor.
-  # This is a SEPARATE image (ghcr.io/arasemco/tor-privoxy), built from
-  # the "tor-privoxy" bake target — it does not run Tor itself, it
-  # forwards to the "tor" service's SOCKS port over the Compose network.
-  #
-  # Point clients at it with:
-  #   http_proxy=http://localhost:8118 https_proxy=http://localhost:8118
-  tor-privoxy:
-    image: ghcr.io/arasemco/tor-privoxy:latest
-    hostname: tor-privoxy
-    restart: unless-stopped
-    depends_on:
-      - tor
-    environment:
-      PRIVOXY_LISTEN_PORT: "8118"
-      PRIVOXY_TOR_SOCKS_HOST: "tor"
-      PRIVOXY_TOR_SOCKS_PORT: "9050"
-      PRIVOXY_FORWARD_DNS: "true"
-      PRIVOXY_ENABLE_FILTERS: "true"
-    ports:
-      - "8118:8118"
 
   # Hidden service on multiple ports, reusing a pre-existing onion key
   # from a Docker secret. Onion routing needs no host `ports:` mapping —
@@ -126,6 +134,7 @@ services:
     environment:
       TORRC_ENABLE_HS: "true"
       TORRC_HS_PORTS: "80:10.2.0.2:80,443:10.2.0.2:443"
+      PRIVOXY_ENABLE: "false"
     secrets:
       - tor_hs_ed25519_secret_key
     volumes:

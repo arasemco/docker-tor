@@ -2,31 +2,34 @@
 
 [![Build and push Docker images](https://github.com/arasemco/docker-tor/actions/workflows/docker-build-push.yml/badge.svg)](https://github.com/arasemco/docker-tor/actions/workflows/docker-build-push.yml)
 [![GHCR: tor](https://img.shields.io/badge/ghcr.io-tor-blue?logo=docker)](https://github.com/arasemco/docker-tor/pkgs/container/tor)
-[![GHCR: tor-privoxy](https://img.shields.io/badge/ghcr.io-tor--privoxy-blue?logo=docker)](https://github.com/arasemco/docker-tor/pkgs/container/tor-privoxy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Alpine base](https://img.shields.io/badge/base-alpine%203.24-0D597F?logo=alpinelinux)](https://alpinelinux.org)
+[![s6-overlay](https://img.shields.io/badge/supervisor-s6--overlay-orange)](https://github.com/just-containers/s6-overlay)
 
 A minimal Tor proxy container: SOCKS5, ControlPort, Hidden Service,
 exit/entry node selection, and bridges — all toggled at runtime via
-environment variables. A second, separate image adds a Privoxy
-HTTP/HTTPS front-end for clients that can't speak SOCKS directly.
+environment variables. An optional Privoxy HTTP/HTTPS front-end runs
+alongside Tor in the same container, toggled with `PRIVOXY_ENABLE`, for
+clients that can't speak SOCKS directly.
 
-Both images build from Alpine, base image pinned by digest (see
+Both processes are supervised independently by
+[s6-overlay](https://github.com/just-containers/s6-overlay): if Tor
+crashes, only Tor restarts — Privoxy (if enabled) keeps running and
+simply fails to reach the SOCKS port until Tor is back up.
+
+Built from Alpine, base image pinned by digest (see
 [`docker-bake.hcl`](./docker-bake.hcl)).
 
 ## Images
 
 | Tag | Contents |
 |---|---|
-| `ghcr.io/arasemco/tor:latest` | Latest Tor daemon build off `main` |
+| `ghcr.io/arasemco/tor:latest` | Latest build off `main` |
 | `ghcr.io/arasemco/tor:<TOR_VERSION>` | Pinned to a specific Tor package version, e.g. `0.4.9.11-r0` |
-| `ghcr.io/arasemco/tor-privoxy:latest` | Latest Privoxy front-end build off `main` (forwards to a Tor SOCKS5 proxy — does not run Tor itself) |
-| `ghcr.io/arasemco/tor-privoxy:<PRIVOXY_VERSION>` | Pinned to a specific Privoxy package version, e.g. `4.0.0-r0` |
 
-`tor` and `tor-privoxy` are independent images built from the same
-[`Tor/Dockerfile`](./Tor/Dockerfile) (two stages sharing a common `base`
-layer) — see [Privoxy](#privoxy-http-front-end) below for how they're
-meant to be used together.
+One image, built from [`Tor/Dockerfile`](./Tor/Dockerfile). Tor always
+runs; Privoxy is present in every build but only actually starts when
+`PRIVOXY_ENABLE=true` — see [Privoxy](#privoxy-http-front-end) below.
 
 ## Quick start
 
@@ -36,21 +39,23 @@ docker compose up tor
 
 Starts a plain SOCKS5 proxy on `localhost:9050`. See [`docker-compose.yml`](./docker-compose.yml)
 for the full set of example services, including exit-node selection
-(`tor-exit-select`), bridges (`tor-bridges`), an HTTP/HTTPS front-end via
-Privoxy (`tor-privoxy`), and a hidden-service example (`tor-hs`).
+(`tor-exit-select`), bridges (`tor-bridges`), Tor + Privoxy together
+(`tor-privoxy`), and a hidden-service example (`tor-hs`).
 
 ## Runtime configuration
 
 Nothing is baked into the image at build time except package versions —
 what actually runs (SOCKS only, hidden service only, node selection,
-bridges, or any combination) is decided by environment variables read by
-[`entrypoint.sh`](./Tor/entrypoint.sh) on container start, which writes
-`/etc/tor/torrc` accordingly.
+bridges, Privoxy, or any combination) is decided by environment variables
+read by each s6-supervised service's `run` script on container start:
+[`Tor/services/tor/run`](./Tor/services/tor/run) writes `/etc/tor/torrc`;
+[`Tor/services/privoxy/run`](./Tor/services/privoxy/run) writes
+`/etc/privoxy/config`.
 
-> **Breaking change:** every runtime-config variable now uses a `TORRC_`
-> prefix (e.g. `ENABLE_SOCKS` → `TORRC_ENABLE_SOCKS`), namespacing them
-> clearly as "things that end up in torrc". There is no back-compat shim
-> for the old unprefixed names — update your env/Compose files.
+> **Breaking change:** every runtime-config variable uses a `TORRC_`
+> prefix for Tor (e.g. `TORRC_ENABLE_SOCKS`) or `PRIVOXY_` for Privoxy.
+> There is no back-compat shim for old unprefixed names — update your
+> env/Compose files.
 
 ### SOCKS / ControlPort / Hidden Service
 
@@ -97,36 +102,37 @@ or by emailing `bridges@torproject.org`.
 
 ## Privoxy (HTTP front-end)
 
-`ghcr.io/arasemco/tor-privoxy` is a **separate image**, built from a
-different stage of the same [`Tor/Dockerfile`](./Tor/Dockerfile). It runs
-Privoxy configured to forward everything through a Tor SOCKS5 proxy —
-**it does not run Tor itself**. Use it when a client can only speak
-HTTP/HTTPS proxies (`http_proxy`/`https_proxy` env vars, browser proxy
-settings, etc.) and can't be pointed at a SOCKS5 proxy directly.
+Privoxy ships in every build of this image but only runs when
+`PRIVOXY_ENABLE=true`. When enabled, it forwards everything through
+Tor's SOCKS5 proxy over loopback (`127.0.0.1`, since both processes share
+one container/network namespace) — giving HTTP/HTTPS-only clients
+(`http_proxy`/`https_proxy` env vars, browser proxy settings, some CLI
+tools) a way into Tor without speaking SOCKS directly.
 
-Typical shape: a `tor` container with `TORRC_ENABLE_SOCKS=true`, plus a
-`tor-privoxy` container pointed at it — see the `tor-privoxy` example
-service in [`docker-compose.yml`](./docker-compose.yml), which wires this
-up over a Compose network by service name.
+Tor and Privoxy are supervised independently. A crash in one doesn't
+restart the other — Privoxy just fails to reach the SOCKS port until Tor
+recovers, and a Privoxy crash has no effect on Tor since Privoxy isn't
+a dependency of it. `docker exec <container> ps` shows both processes
+running side by side under s6's supervision tree.
 
-All Privoxy runtime-config variables use a `PRIVOXY_` prefix, mirroring
-the `TORRC_` convention — see
-[`Tor/privoxy-entrypoint.sh`](./Tor/privoxy-entrypoint.sh) for the full
+All Privoxy runtime-config variables use a `PRIVOXY_` prefix — see
+[`Tor/services/privoxy/run`](./Tor/services/privoxy/run) for the full
 reference.
 
 | Variable | Default | Description |
 |---|---|---|
+| `PRIVOXY_ENABLE` | `false` | Enable Privoxy. When `false`, the service idles and does nothing. |
 | `PRIVOXY_LISTEN_ADDRESS` | `0.0.0.0` | Interface Privoxy listens on |
 | `PRIVOXY_LISTEN_PORT` | `8118` | Privoxy's HTTP proxy port |
-| `PRIVOXY_TOR_SOCKS_HOST` | `tor` | Hostname of the upstream Tor SOCKS5 proxy (e.g. another container's service name) |
-| `PRIVOXY_TOR_SOCKS_PORT` | `9050` | Port of the upstream Tor SOCKS5 proxy |
+| `PRIVOXY_TOR_SOCKS_HOST` | `127.0.0.1` | Host of the upstream Tor SOCKS5 proxy — loopback by default since Tor runs in the same container |
+| `PRIVOXY_TOR_SOCKS_PORT` | `9050` | Port of the upstream Tor SOCKS5 proxy — should match `TORRC_SOCKS_PORT` |
 | `PRIVOXY_FORWARD_DNS` | `true` | When `true`, DNS resolution happens remotely via Tor (`forward-socks5t`, no local DNS leak). When `false`, resolves locally first (`forward-socks5`) — **not recommended**, leaks hostnames outside Tor. |
 | `PRIVOXY_ENABLE_FILTERS` | `true` | Enable Privoxy's default ad/tracker/banner content filtering. When `false`, traffic is relayed with no filtering. |
 | `PRIVOXY_ENABLE_LOGGING` | `false` | Enable Privoxy's own request logging. Off by default — verbose request logs are themselves a privacy leak on an anonymizing proxy. |
 | `PRIVOXY_TRUSTED_CIDRS` | *(unset)* | Comma-separated CIDRs allowed to connect (`permit-access` lines), e.g. `10.0.0.0/8,192.168.0.0/16`. Restrict this in any multi-tenant/shared-network deployment. |
 
 ```bash
-docker compose up tor tor-privoxy
+docker compose up tor-privoxy
 ```
 
 then point a client at `http://localhost:8118`:
@@ -139,8 +145,8 @@ curl -x http://localhost:8118 https://check.torproject.org/api/ip
 
 Tor expresses multiple ports on one onion address as repeated
 `HiddenServicePort` lines under a single `HiddenServiceDir` — there's no
-single-line list syntax in `torrc`. `entrypoint.sh` builds that from
-`TORRC_HS_PORTS`:
+single-line list syntax in `torrc`. The `tor` service's `run` script
+builds that from `TORRC_HS_PORTS`:
 
 ```yaml
 environment:
@@ -158,8 +164,8 @@ HiddenServicePort 443 10.2.0.2:443
 
 ### Reusing an onion address (secrets)
 
-Mount an existing `hs_ed25519_secret_key` as a Docker secret and
-`entrypoint.sh` copies it into the hidden service directory with the
+Mount an existing `hs_ed25519_secret_key` as a Docker secret and the
+`tor` service copies it into the hidden service directory with the
 ownership/permissions Tor requires (secrets mount read-only and
 root-owned by default, which Tor refuses to start against):
 
@@ -195,13 +201,17 @@ service in `docker-compose.yml`.
   refuse to build circuits at all if it can't satisfy your `*_NODES`
   constraints, rather than silently falling back to unrestricted routing.
 - `PRIVOXY_FORWARD_DNS=false` (opt-out of remote DNS resolution) leaks
-  hostnames to whatever resolver the Privoxy container/host uses,
-  defeating part of the point of routing through Tor — leave this at its
-  `true` default unless you specifically need local resolution.
+  hostnames to whatever resolver the container/host uses, defeating part
+  of the point of routing through Tor — leave this at its `true` default
+  unless you specifically need local resolution.
 - `PRIVOXY_TRUSTED_CIDRS` is unset by default, meaning Privoxy accepts
   connections from wherever `PRIVOXY_LISTEN_ADDRESS` binds (`0.0.0.0` by
   default = everywhere). Set it explicitly in any deployment where the
   Privoxy port might be reachable from an untrusted network.
+- Tor and Privoxy share one container/network namespace: a compromise of
+  one process has local (loopback) network visibility into the other.
+  This is the trade-off of running both in a single container instead of
+  separate ones — weigh it against your threat model.
 
 ## Building
 
@@ -209,11 +219,9 @@ Images are built with `docker buildx bake`, not `docker build` or
 `docker compose build`:
 
 ```bash
-bash bake.sh                      # build the default group (both "tor" and "tor-privoxy")
-bash bake.sh --push               # build and push both to REGISTRY
-bash bake.sh --print              # resolve and print the full config, no build
-bash bake.sh tor-privoxy          # build only the Privoxy front-end image
-bash bake.sh tor-privoxy --push   # ...and push just that one
+bash bake.sh            # build the default group (the "tor" target)
+bash bake.sh --push     # build and push to REGISTRY
+bash bake.sh --print    # resolve and print the full config, no build
 ```
 
 `bake.sh` sets `GIT_SHA`/`GIT_REF` from the local git checkout before
@@ -243,6 +251,35 @@ and update `ALPINE_BASE.digest` in `docker-bake.hcl`.
 them there.
 Or `docker run --rm alpine:edge sh -c "apk update && apk policy tor nyx lyrebird privoxy"`
 
+### Bumping s6-overlay
+
+`S6_OVERLAY_VERSION` in `docker-bake.hcl` selects the s6-overlay release
+extracted into the image (see [Process supervision](#process-supervision-s6-overlay)
+below). Check [the releases page](https://github.com/just-containers/s6-overlay/releases)
+for the current version; the Dockerfile downloads and verifies both the
+noarch and architecture-specific tarballs against their published sha256
+checksums at build time, so a bad version string or corrupted download
+fails the build rather than shipping silently.
+
+## Process supervision (s6-overlay)
+
+Tor and Privoxy run as two independently-supervised
+[s6-overlay](https://github.com/just-containers/s6-overlay) services:
+
+```
+Tor/services/
+├── tor/run       # writes /etc/tor/torrc, execs tor
+└── privoxy/run   # writes /etc/privoxy/config, execs privoxy (or idles if PRIVOXY_ENABLE=false)
+```
+
+The container's `ENTRYPOINT` is s6-overlay's own `/init`, which becomes
+PID 1 and starts both services. If Tor crashes, s6 restarts only Tor;
+Privoxy is unaffected (it just can't reach the SOCKS port until Tor is
+back). If Privoxy crashes, only Privoxy restarts. This replaces an
+earlier two-image design where Tor and Privoxy were separate containers
+— now they're one image, with Privoxy toggled on/off via
+`PRIVOXY_ENABLE`, but each process still fails and restarts on its own.
+
 ## CI
 
 `.github/workflows/` builds and pushes the `default` bake group on
@@ -257,12 +294,13 @@ at runtime rather than hardcoded.
 ```
 .
 ├── Tor/
-│   ├── Dockerfile              # base, tor, and tor-privoxy stages
-│   ├── entrypoint.sh           # writes torrc from TORRC_* env vars, execs tor
-│   └── privoxy-entrypoint.sh   # writes privoxy config from PRIVOXY_* env vars, execs privoxy
-├── docker-bake.hcl       # build definitions (targets, labels, base pin)
+│   ├── Dockerfile           # single stage: packages + s6-overlay install
+│   └── services/
+│       ├── tor/run          # s6 service: writes torrc from TORRC_* env vars, execs tor
+│       └── privoxy/run      # s6 service: writes privoxy config from PRIVOXY_* env vars, execs privoxy
+├── docker-bake.hcl       # build definition (target, labels, base pin)
 ├── bake.sh               # wraps buildx bake, injects GIT_SHA/GIT_REF
-├── docker-compose.yml    # example services: SOCKS5, exit-node select, bridges, privoxy, hidden service
+├── docker-compose.yml    # example services: SOCKS5, exit-node select, bridges, tor+privoxy, hidden service
 └── .github/workflows/    # CI: build + push via buildx bake
 ```
 
@@ -270,9 +308,9 @@ Links
 -----
 * [Project home page (GitHub)](https://github.com/arasemco/docker-tor)
 * [`tor` image (GHCR)](https://github.com/arasemco/docker-tor/pkgs/container/tor)
-* [`tor-privoxy` image (GHCR)](https://github.com/arasemco/docker-tor/pkgs/container/tor-privoxy)
 * [Tor Project](https://www.torproject.org)
 * [Privoxy](https://www.privoxy.org)
+* [s6-overlay](https://github.com/just-containers/s6-overlay)
 
 Bugs
 ----

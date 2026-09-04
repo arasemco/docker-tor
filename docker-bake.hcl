@@ -1,20 +1,19 @@
 // =============================================================================
-// docker-bake.hcl — build definitions for the Tor proxy container image(s)
+// docker-bake.hcl — build definitions for the Tor proxy container image
 // =============================================================================
 //
-// Two targets build from the shared Dockerfile in ./Tor:
-//   - "tor"          the Tor daemon (SOCKS/control/hidden-service/node-
-//                     selection/bridges — all runtime toggles).
-//   - "tor-privoxy"   Privoxy front-end only, forwards to a Tor SOCKS5
-//                     proxy reachable over the network. Shares the "base"
-//                     stage/layer with "tor" but is otherwise independent.
+// A single "tor" target builds from the Dockerfile in ./Tor. As of the
+// s6-overlay merge, this is ONE image running both Tor and (optionally)
+// Privoxy, supervised independently by s6-overlay — see Tor/Dockerfile
+// and Tor/services/{tor,privoxy}/run. This replaces the previous
+// two-target design ("tor" + "tor-privoxy" as separate images); Privoxy
+// is now a runtime toggle (PRIVOXY_ENABLE) on the same image rather than
+// a separate build.
 //
 // Usage (via bake.sh):
 //   bash bake.sh --print   # resolve and print the full config, no build
-//   bash bake.sh           # build the "default" group (both targets)
+//   bash bake.sh           # build the "default" group (the "tor" target)
 //   bash bake.sh --push    # build and push
-//   bash bake.sh tor-privoxy         # build just the privoxy target
-//   bash bake.sh tor-privoxy --push  # ...and push just that one
 //
 // GIT_SHA/GIT_REF/REGISTRY/etc. can't be detected from inside this file —
 // HCL has no access to git, the filesystem, or CI context. bake.sh computes
@@ -72,11 +71,20 @@ function "pinned_ref" {
 }
 
 // Pinned upstream Alpine package versions, passed to the Dockerfile as
-// build args to select what actually gets installed.
+// build args to select what actually gets installed. Verify current
+// values with, e.g.: docker run --rm alpine:<tag> sh -c "apk update &&
+// apk policy tor nyx lyrebird privoxy" — these drift over time as Alpine
+// repos update, and a stale pin here is a build-time failure, not a
+// silent problem, so it's always caught before shipping.
 variable "TOR_VERSION"      { default = "0.4.9.11-r0" }
 variable "NYX_VERSION"      { default = "2.1.0-r6"    }
 variable "LYREBIRD_VERSION" { default = "0.8.1-r5"    }
 variable "PRIVOXY_VERSION"  { default = "4.0.0-r0"    }
+
+// s6-overlay release version — see Tor/Dockerfile's own comment for how
+// this is verified (sha256 checksums fetched and checked at build time).
+// Bump by checking https://github.com/just-containers/s6-overlay/releases.
+variable "S6_OVERLAY_VERSION" { default = "3.2.3.0" }
 
 // Default to "unknown" rather than empty string — a bare build outside of
 // bake.sh (or before the first commit) can't know these, and "unknown" is
@@ -88,17 +96,20 @@ variable "GIT_REF" { default = "unknown" }
 // Comma-separated string, not an HCL list — env vars are always strings,
 // so this can be overridden with PLATFORMS=linux/amd64,linux/arm64 without
 // touching the file. split(",", PLATFORMS) below turns it into the list
-// `platforms` actually needs.
+// `platforms` actually needs. NOTE: Tor/Dockerfile's TARGETARCH ->
+// s6-overlay-arch mapping currently only covers amd64/arm64 — extend that
+// mapping in the Dockerfile before adding other platforms here.
 variable "PLATFORMS" { default = "linux/amd64" }
 
 
 // -----------------------------------------------------------------------
-// Tor specific labels
+// Labels
 // -----------------------------------------------------------------------
-// Custom (non-OCI-standard) labels describing the upstream product itself,
-// not this repo's packaging of it — separate from oci_labels() because
-// these don't vary per-target. Applied once at base so every image gets
-// them without repeating this block per target.
+// Custom (non-OCI-standard) labels describing the upstream products this
+// image packages. Both are applied unconditionally now (not per-target,
+// since there's only one target) — Privoxy's labels are included even
+// though PRIVOXY_ENABLE defaults to false, because the software is
+// present in the image regardless of whether it's toggled on at runtime.
 variable "TOR_LABELS" {
   default = {
     "org.torproject.product" = "Tor"
@@ -108,9 +119,6 @@ variable "TOR_LABELS" {
   }
 }
 
-// Same idea as TOR_LABELS, but for the Privoxy project — only applied to
-// the "tor-privoxy" target, since the plain "tor" image doesn't ship
-// Privoxy at all.
 variable "PRIVOXY_LABELS" {
   default = {
     "org.privoxy.product" = "Privoxy"
@@ -156,26 +164,30 @@ function "oci_labels" {
   }
 }
 
-// default group: `bash bake.sh` with no target name builds both images.
+// default group: `bash bake.sh` with no target name builds the one image.
 group "default" {
-  targets = ["tor", "tor-privoxy"]
+  targets = ["tor"]
 }
 
-// Tor daemon image. SOCKS/control/hidden-service/node-selection/bridges
-// are all runtime toggles — entrypoint.sh writes torrc from env — so
-// every deployment shape is the same image with different defaults/ports
-// at `docker run` time, not different build targets.
+// Single runtime image. Tor and Privoxy are both present in every build;
+// which processes actually run, and Tor's SOCKS/control/hidden-service/
+// node-selection/bridge configuration, are runtime toggles (each
+// service's s6 run script writes its own config file from env vars at
+// container start) — not build-time variants. Tagged by TOR_VERSION
+// since Tor is the image's primary purpose; PRIVOXY_VERSION isn't part
+// of the tag but is captured in the image's labels.
 target "tor" {
   context    = "Tor"
   dockerfile = "Dockerfile"
-  target     = "tor"
   pull       = true
 
   args = {
-    ALPINE_REF       = pinned_ref(ALPINE_BASE)
-    TOR_VERSION      = TOR_VERSION
-    NYX_VERSION      = NYX_VERSION
-    LYREBIRD_VERSION = LYREBIRD_VERSION
+    ALPINE_REF         = pinned_ref(ALPINE_BASE)
+    TOR_VERSION        = TOR_VERSION
+    NYX_VERSION        = NYX_VERSION
+    LYREBIRD_VERSION   = LYREBIRD_VERSION
+    PRIVOXY_VERSION    = PRIVOXY_VERSION
+    S6_OVERLAY_VERSION = S6_OVERLAY_VERSION
   }
 
   tags = [
@@ -185,49 +197,11 @@ target "tor" {
 
   labels = merge(
     TOR_LABELS,
-    oci_labels(
-      "tor",
-      "Tor proxy: SOCKS5 + Hidden Service, toggled at runtime via env vars",
-      TOR_VERSION,
-      ALPINE_BASE,
-    )
-  )
-
-  platforms = split(",", PLATFORMS)
-}
-
-// Privoxy front-end image. Built from the same Dockerfile's "tor-privoxy"
-// stage, which shares the "base" layer with "tor" above (so building both
-// in one bake run doesn't redownload the common curl/bash/su-exec/tor
-// packages twice) but does NOT run Tor itself — it forwards to a Tor
-// SOCKS5 proxy reachable over the network at container runtime. Tagged
-// and versioned independently since Privoxy's own release cadence is
-// unrelated to Tor's.
-target "tor-privoxy" {
-  context    = "Tor"
-  dockerfile = "Dockerfile"
-  target     = "tor-privoxy"
-  pull       = true
-
-  args = {
-    ALPINE_REF       = pinned_ref(ALPINE_BASE)
-    TOR_VERSION      = TOR_VERSION
-    NYX_VERSION      = NYX_VERSION
-    LYREBIRD_VERSION = LYREBIRD_VERSION
-    PRIVOXY_VERSION  = PRIVOXY_VERSION
-  }
-
-  tags = [
-    "${REGISTRY}/tor-privoxy:latest",
-    "${REGISTRY}/tor-privoxy:${PRIVOXY_VERSION}",
-  ]
-
-  labels = merge(
     PRIVOXY_LABELS,
     oci_labels(
-      "tor-privoxy",
-      "Privoxy HTTP/HTTPS front-end that forwards to a Tor SOCKS5 proxy, toggled at runtime via env vars",
-      PRIVOXY_VERSION,
+      "tor",
+      "Tor proxy (SOCKS5/ControlPort/Hidden Service/bridges/node selection) with an optional Privoxy HTTP front-end, both supervised by s6-overlay and toggled at runtime via env vars",
+      TOR_VERSION,
       ALPINE_BASE,
     )
   )

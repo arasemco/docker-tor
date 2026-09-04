@@ -1,21 +1,25 @@
-#!/bin/bash
+#!/command/with-contenv bash
 # =============================================================================
-# entrypoint.sh — writes /etc/tor/torrc from env vars, then execs tor.
+# services/tor/run — s6-supervised service script. Writes /etc/tor/torrc
+# from TORRC_* env vars, then execs tor.
 #
-# NOTE: this file was not supplied in the original project and is authored
-# here to match the behavior described in the Dockerfile's comments. Review
-# before relying on it in production — in particular the control-port auth
-# story (currently cookie-only, no password).
+# This runs under s6-overlay (see ../../Dockerfile and /init) as one of two
+# independently-supervised services in this image, the other being
+# services/privoxy/run. If tor crashes, s6 restarts ONLY this service —
+# privoxy (if enabled) keeps running and simply fails to reach Tor's SOCKS
+# port until tor comes back up, rather than the whole container dying and
+# taking privoxy down with it. This is the behavior change from the
+# previous two-image (separate "tor"/"tor-privoxy" targets) design: now
+# it's one image, but the two processes still fail/restart independently.
 #
-# All runtime-config env vars use a TORRC_ prefix (e.g. TORRC_ENABLE_SOCKS,
-# TORRC_HS_PORTS) to namespace them clearly as "things that end up in
-# torrc", distinct from anything else the container/orchestrator might set.
-# This is a breaking rename from the previous unprefixed vars
-# (ENABLE_SOCKS -> TORRC_ENABLE_SOCKS, etc.) — no back-compat shim is
-# provided, update your env/compose files accordingly.
+# The #!/command/with-contenv shebang is an s6-overlay helper that ensures
+# this script sees the container's full environment (TORRC_* vars set via
+# `docker run -e` / compose `environment:`), since s6's own service
+# supervision tree normally runs with a minimal/reset environment for
+# predictability — with-contenv opts back in.
 #
 # -----------------------------------------------------------------------
-# SOCKS / Control / Hidden Service (existing, renamed)
+# SOCKS / Control / Hidden Service
 # -----------------------------------------------------------------------
 # TORRC_ENABLE_SOCKS         default: false
 # TORRC_SOCKS_PORT           default: 9050
@@ -29,38 +33,21 @@
 # TORRC_HS_SECRET_KEY_FILE   default: /run/secrets/tor_hs_ed25519_secret_key
 #
 # -----------------------------------------------------------------------
-# Exit / entry / excluded node selection (new)
+# Exit / entry / excluded node selection
 # -----------------------------------------------------------------------
 # TORRC_EXIT_NODES           e.g. "{us},{de}" -> ExitNodes {us},{de}
 # TORRC_ENTRY_NODES          e.g. "{fr}"      -> EntryNodes {fr}
 # TORRC_EXCLUDE_NODES        e.g. "{ru},{cn}" -> ExcludeNodes {ru},{cn}
 # TORRC_EXCLUDE_EXIT_NODES   e.g. "{ru}"      -> ExcludeExitNodes {ru}
-# TORRC_STRICT_NODES         default: false   -> StrictNodes 0/1. Only
-#                             meaningful alongside the *_NODES vars above:
-#                             when true, Tor refuses to build a circuit at
-#                             all rather than fall back outside the list.
+# TORRC_STRICT_NODES         default: false   -> StrictNodes 0/1.
 #
 # -----------------------------------------------------------------------
-# Bridges / pluggable transports (new — activates the lyrebird package
-# that was already installed but unused)
+# Bridges / pluggable transports
 # -----------------------------------------------------------------------
 # TORRC_ENABLE_BRIDGES       default: false   -> UseBridges 1
-# TORRC_BRIDGE_LINES         newline- or literal-"\n"-separated bridge
-#                             lines, each written verbatim as a torrc
-#                             "Bridge ..." line, e.g.:
-#                               obfs4 192.0.2.1:443 FINGERPRINT cert=... iat-mode=0
-#                             Accepts real newlines (multi-line env var) or
-#                             the two-character sequence \n as a separator,
-#                             so it also works from single-line env sources
-#                             (e.g. some Compose/K8s secret injection paths).
-# TORRC_BRIDGE_TRANSPORT     default: obfs4  -> which ClientTransportPlugin
-#                             line to emit. Set to "" to skip emitting a
-#                             ClientTransportPlugin line entirely (e.g. if
-#                             your bridge lines are all vanilla, unlisted
-#                             bridges that need no pluggable transport).
-# TORRC_LYREBIRD_PATH        default: /usr/bin/lyrebird — path to the
-#                             pluggable-transport binary.
-#
+# TORRC_BRIDGE_LINES         newline- or literal-"\n"-separated bridge lines
+# TORRC_BRIDGE_TRANSPORT     default: obfs4  -> ClientTransportPlugin line
+# TORRC_LYREBIRD_PATH        default: /usr/bin/lyrebird
 # =============================================================================
 set -euo pipefail
 
@@ -96,9 +83,6 @@ seed_hs_key() {
 }
 
 write_node_selection() {
-    # Node-selection lines are independent of each other; only emit a
-    # line for the ones actually set, so an unset var doesn't clobber
-    # Tor's own defaults with an empty directive.
     if [ -n "${TORRC_EXIT_NODES}" ]; then
         echo "ExitNodes ${TORRC_EXIT_NODES}" >> "${TORRC}"
     fi
@@ -112,10 +96,6 @@ write_node_selection() {
         echo "ExcludeExitNodes ${TORRC_EXCLUDE_EXIT_NODES}" >> "${TORRC}"
     fi
 
-    # StrictNodes only makes sense once at least one of the above is set;
-    # emitting "StrictNodes 1" with no *Nodes list would just be a no-op,
-    # but we still respect an explicit true/false either way rather than
-    # silently overriding the user's choice.
     if [ "${TORRC_STRICT_NODES}" = "true" ]; then
         echo "StrictNodes 1" >> "${TORRC}"
     else
@@ -133,14 +113,8 @@ write_bridges() {
     fi
 
     if [ -n "${TORRC_BRIDGE_LINES}" ]; then
-        # Normalize the literal two-character sequence \n to a real
-        # newline first, so this accepts either an actual multi-line env
-        # var (Compose/K8s "|"-style block) or a single-line value from
-        # sources that can't carry real newlines (e.g. some secret
-        # managers, `docker run -e`).
         normalized="${TORRC_BRIDGE_LINES//\\n/$'\n'}"
         while IFS= read -r line; do
-            # Skip blank lines that fall out of the split/normalize step.
             [ -n "${line}" ] && echo "Bridge ${line}" >> "${TORRC}"
         done <<< "${normalized}"
     fi
@@ -160,9 +134,6 @@ write_torrc() {
 
     if [ "${TORRC_ENABLE_CONTROL}" = "true" ]; then
         echo "ControlPort 0.0.0.0:${TORRC_CONTROL_PORT}" >> "${TORRC}"
-        # No control-port auth configured by default. Set
-        # HashedControlPassword (via `tor --hash-password`) or
-        # CookieAuthentication before exposing this beyond localhost.
         echo "CookieAuthentication 1" >> "${TORRC}"
     fi
 
@@ -174,9 +145,6 @@ write_torrc() {
         echo "HiddenServiceDir ${HS_DIR}" >> "${TORRC}"
 
         if [ -n "${TORRC_HS_PORTS}" ]; then
-            # "80:10.2.0.2:80,443:10.2.0.2:443" -> one HiddenServicePort
-            # line per comma-separated entry, split on the first ":" only
-            # (the target itself contains a ":" between host and port).
             IFS=',' read -ra _hs_entries <<< "${TORRC_HS_PORTS}"
             for entry in "${_hs_entries[@]}"; do
                 virtport="${entry%%:*}"
@@ -202,14 +170,4 @@ chown tor:tor "$(dirname "${TORRC}")"
 write_torrc
 chown tor:tor "${TORRC}"
 
-case "${1:-tor}" in
-    tor)
-        exec su-exec tor tor -f "${TORRC}"
-        ;;
-    nyx)
-        exec su-exec tor nyx
-        ;;
-    *)
-        exec "$@"
-        ;;
-esac
+exec su-exec tor tor -f "${TORRC}"
