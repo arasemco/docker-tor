@@ -75,7 +75,7 @@ function "pinned_ref" {
 // build args to select what actually gets installed.
 variable "TOR_VERSION"      { default = "0.4.9.11-r0" }
 variable "NYX_VERSION"      { default = "2.1.0-r6"    }
-variable "LYREBIRD_VERSION" { default = "0.8.1-r5"    }
+variable "LYREBIRD_VERSION" { default = "0.8.1-r6"    }
 variable "PRIVOXY_VERSION"  { default = "4.0.0-r0"    }
 
 // Default to "unknown" rather than empty string — a bare build outside of

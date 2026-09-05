@@ -25,6 +25,15 @@
 # (singular) still work as shorthand for a single port; TORRC_HS_PORTS
 # takes priority when both are set.
 #
+# SOCKS entry policy: TORRC_SOCKS_POLICY is a comma-separated list of
+# "accept <CIDR>" / "reject <CIDR>" entries, written as one SocksPolicy
+# line per entry (first match wins, same as Tor's own torrc). Defaults to
+# accepting all private/local networks (loopback, link-local, RFC1918 —
+# Tor's built-in "private" alias) and rejecting everything else, so a
+# bare TORRC_ENABLE_SOCKS=true is safe-by-default for local/LAN clients
+# without needing to set this explicitly. See the "tor-socks-policy"
+# example service below for a tighter, explicit override.
+#
 # Secret-seeded key: mount an existing hs_ed25519_secret_key via
 # `secrets:` at /run/secrets/tor_hs_ed25519_secret_key (or override
 # TORRC_HS_SECRET_KEY_FILE) to reuse a known onion address instead of
@@ -48,6 +57,24 @@ services:
       #- "9051:9051"
     volumes:
       - ./data/tor:/var/lib/tor
+
+  # Same as "tor" above, but with an explicit, tighter SOCKS entry policy
+  # — only two specific LAN ranges may use this proxy, everything else
+  # (including other private ranges the default would allow) is rejected.
+  # Demonstrates overriding TORRC_SOCKS_POLICY away from its
+  # "accept private:*,reject *" default.
+  tor-socks-policy:
+    image: ghcr.io/arasemco/tor:latest
+    hostname: tor-socks-policy
+    restart: unless-stopped
+    environment:
+      TORRC_ENABLE_SOCKS: "true"
+      TORRC_SOCKS_PORT: "9050"
+      TORRC_SOCKS_POLICY: "accept 10.0.0.0/8,accept 172.16.0.0/12,accept 192.168.0.0/16,reject *"
+    ports:
+      - "9055:9050"
+    volumes:
+      - ./data/tor-socks-policy:/var/lib/tor
 
   # SOCKS5 proxy restricted to exit nodes in specific countries, refusing
   # to fall back elsewhere (StrictNodes). Also excludes a couple of

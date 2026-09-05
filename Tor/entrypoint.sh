@@ -29,6 +29,24 @@
 # TORRC_HS_SECRET_KEY_FILE   default: /run/secrets/tor_hs_ed25519_secret_key
 #
 # -----------------------------------------------------------------------
+# SOCKS entry policy (new)
+# -----------------------------------------------------------------------
+# TORRC_SOCKS_POLICY         comma-separated list of "accept <CIDR>" /
+#                             "reject <CIDR>" entries, evaluated first to
+#                             last (first match wins), written verbatim as
+#                             one "SocksPolicy ..." line per entry, e.g.:
+#                               TORRC_SOCKS_POLICY="accept 10.0.0.0/8,accept 192.168.0.0/16,reject *"
+#                             Default accepts all private/local networks
+#                             (RFC1918 + loopback + link-local, via Tor's
+#                             built-in "private" alias) and rejects
+#                             everything else — see DEFAULT_SOCKS_POLICY
+#                             below for the exact value. Set to an empty
+#                             string to emit no SocksPolicy lines at all
+#                             (Tor's own fallback then applies: accept all
+#                             requests that reach the SocksPort, since
+#                             SocksPolicy is an additional ACL on top of
+#                             the bind address, not a replacement for it).
+# -----------------------------------------------------------------------
 # Exit / entry / excluded node selection (new)
 # -----------------------------------------------------------------------
 # TORRC_EXIT_NODES           e.g. "{us},{de}" -> ExitNodes {us},{de}
@@ -78,6 +96,14 @@ HS_DIR="${DATA_DIR}/hidden_service"
 : "${TORRC_HS_PORTS:=}"
 : "${TORRC_HS_SECRET_KEY_FILE:=/run/secrets/tor_hs_ed25519_secret_key}"
 
+# Accept all private/local networks (loopback, link-local, RFC1918) by
+# default, reject everything else — "private" is Tor's own built-in alias
+# for exactly this address set (see torrc(5)/tor(1)), so this is expressed
+# the same raw-policy-line way as an explicit override would be, just
+# pre-filled with a sensible default rather than left empty.
+DEFAULT_SOCKS_POLICY="accept private:*,reject *"
+: "${TORRC_SOCKS_POLICY:=${DEFAULT_SOCKS_POLICY}}"
+
 : "${TORRC_EXIT_NODES:=}"
 : "${TORRC_ENTRY_NODES:=}"
 : "${TORRC_EXCLUDE_NODES:=}"
@@ -93,6 +119,21 @@ seed_hs_key() {
     if [ -f "${TORRC_HS_SECRET_KEY_FILE}" ]; then
         install -o tor -g tor -m 600 "${TORRC_HS_SECRET_KEY_FILE}" "${HS_DIR}/hs_ed25519_secret_key"
     fi
+}
+
+write_socks_policy() {
+    # Empty means "emit nothing" — an explicit opt-out back to Tor's own
+    # fallback (accept all requests that reach the SocksPort), distinct
+    # from setting an actual "accept *" policy line.
+    [ -n "${TORRC_SOCKS_POLICY}" ] || return 0
+
+    IFS=',' read -ra _socks_policy_entries <<< "${TORRC_SOCKS_POLICY}"
+    for entry in "${_socks_policy_entries[@]}"; do
+        # Trim leading/trailing whitespace so "accept X, reject *" (space
+        # after the comma) works the same as "accept X,reject *".
+        entry="$(echo "${entry}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [ -n "${entry}" ] && echo "SocksPolicy ${entry}" >> "${TORRC}"
+    done
 }
 
 write_node_selection() {
@@ -154,6 +195,7 @@ write_torrc() {
 
     if [ "${TORRC_ENABLE_SOCKS}" = "true" ]; then
         echo "SocksPort 0.0.0.0:${TORRC_SOCKS_PORT}" >> "${TORRC}"
+        write_socks_policy
     else
         echo "SocksPort 0" >> "${TORRC}"
     fi

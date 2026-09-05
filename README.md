@@ -36,8 +36,9 @@ docker compose up tor
 
 Starts a plain SOCKS5 proxy on `localhost:9050`. See [`docker-compose.yml`](./docker-compose.yml)
 for the full set of example services, including exit-node selection
-(`tor-exit-select`), bridges (`tor-bridges`), an HTTP/HTTPS front-end via
-Privoxy (`tor-privoxy`), and a hidden-service example (`tor-hs`).
+(`tor-exit-select`), a tighter SOCKS entry policy (`tor-socks-policy`),
+bridges (`tor-bridges`), an HTTP/HTTPS front-end via Privoxy
+(`tor-privoxy`), and a hidden-service example (`tor-hs`).
 
 ## Runtime configuration
 
@@ -194,6 +195,13 @@ service in `docker-compose.yml`.
 - `TORRC_STRICT_NODES=true` trades availability for guarantee: Tor will
   refuse to build circuits at all if it can't satisfy your `*_NODES`
   constraints, rather than silently falling back to unrestricted routing.
+- `TORRC_SOCKS_POLICY`'s default (`accept private:*,reject *`) accepts
+  requests from *any* private/local network reaching the SocksPort — this
+  is convenient for LAN/container-network use but is not the same as
+  "only my application can use this proxy." If `TORRC_SOCKS_PORT` is
+  bound on a shared network (e.g. a Docker bridge network with other,
+  untrusted containers on it), narrow this to specific CIDRs, same as the
+  `tor-socks-policy` example service in `docker-compose.yml`.
 - `PRIVOXY_FORWARD_DNS=false` (opt-out of remote DNS resolution) leaks
   hostnames to whatever resolver the Privoxy container/host uses,
   defeating part of the point of routing through Tor — leave this at its
