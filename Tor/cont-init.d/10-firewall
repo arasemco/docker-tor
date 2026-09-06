@@ -1,0 +1,84 @@
+#!/command/with-contenv bash
+# =============================================================================
+# cont-init.d/10-firewall — applies an outbound firewall before services.d
+# starts tor/privoxy.
+#
+# s6-overlay stage 2 runs /etc/cont-init.d scripts sequentially and to
+# completion, then starts /etc/services.d services — never the reverse and
+# never concurrently. That ordering is why this lives here rather than as
+# a third services.d entry: a services.d oneshot would race tor/privoxy's
+# own startup instead of strictly preceding it, leaving a window where
+# either process could open a connection before the ruleset is in place.
+#
+# TORRC_ENABLE_FIREWALL     default: false   -> when true, applies a
+#                            default-deny iptables ruleset (INPUT/FORWARD/
+#                            OUTPUT all DROP) that permits only: loopback
+#                            traffic, established/related connections, and
+#                            new outbound connections opened by the "tor"
+#                            or "privoxy" process UIDs. Every other new
+#                            outbound connection attempt — from any other
+#                            process in this container, or from any
+#                            process in another container sharing this
+#                            one's network namespace via Compose's
+#                            `network_mode: "service:tor"` — is dropped.
+#
+#                            Requires the container to run with the
+#                            NET_ADMIN capability; without it the
+#                            iptables calls below fail and this script
+#                            exits non-zero, which aborts container
+#                            startup rather than silently running
+#                            unprotected.
+#
+# TORRC_FIREWALL_ALLOW_INBOUND_PORTS   default: empty  -> comma-separated
+#                            list of TCP ports to accept new inbound
+#                            connections on, e.g. "3000,3001". Only takes
+#                            effect when TORRC_ENABLE_FIREWALL=true.
+#
+#                            The base ruleset's INPUT chain is default-DROP
+#                            with only loopback and established/related
+#                            connections accepted — a fresh inbound
+#                            connection to any port, including one that
+#                            has a process listening and a Compose `ports:`
+#                            mapping published for it, is NEW rather than
+#                            ESTABLISHED and gets dropped before reaching
+#                            that listener. This is what makes a published
+#                            port unreachable even though something is
+#                            genuinely bound to it inside the container (or
+#                            in another container sharing this network
+#                            namespace via `network_mode: "service:tor"`,
+#                            e.g. a browser's noVNC UI on 3000/3001) — the
+#                            listener was never the problem; the INPUT
+#                            policy was. List each such port here to accept
+#                            new inbound connections to it specifically,
+#                            rather than opening INPUT wholesale.
+# =============================================================================
+set -euo pipefail
+
+: "${TORRC_ENABLE_FIREWALL:=false}"
+: "${TORRC_FIREWALL_ALLOW_INBOUND_PORTS:=}"
+
+[ "${TORRC_ENABLE_FIREWALL}" = "true" ] || exit 0
+
+iptables -F
+iptables -X
+
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT DROP
+
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+iptables -A OUTPUT -m owner --uid-owner tor -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner privoxy -j ACCEPT
+
+if [ -n "${TORRC_FIREWALL_ALLOW_INBOUND_PORTS}" ]; then
+    IFS=',' read -ra _allowed_ports <<< "${TORRC_FIREWALL_ALLOW_INBOUND_PORTS}"
+    for port in "${_allowed_ports[@]}"; do
+        port="$(echo "${port}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [ -n "${port}" ] && iptables -A INPUT -p tcp --dport "${port}" -j ACCEPT
+    done
+fi

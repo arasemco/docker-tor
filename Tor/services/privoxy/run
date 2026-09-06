@@ -1,23 +1,29 @@
-#!/bin/bash
+#!/command/with-contenv bash
 # =============================================================================
-# privoxy-entrypoint.sh — writes /etc/privoxy/config from env vars, then
-# execs privoxy.
+# services/privoxy/run — s6-supervised service script. Writes
+# /etc/privoxy/config from PRIVOXY_* env vars, then execs privoxy.
 #
-# This is the entrypoint for the separate "tor-privoxy" build target (see
-# ../docker-bake.hcl and the "privoxy" stage in Dockerfile) — NOT the same
-# image/process as the plain "tor" target. It runs Privoxy configured to
-# forward everything through a Tor SOCKS5 proxy, giving HTTP/HTTPS-only
-# clients (anything that can't speak SOCKS directly) a plain HTTP proxy
-# interface into Tor.
+# This runs alongside services/tor/run under s6-overlay (see ../../Dockerfile
+# and /init) as one of two independently-supervised services in this image.
+# If privoxy crashes, s6 restarts ONLY this service — tor keeps running
+# undisturbed. Conversely if tor restarts, privoxy is not restarted; it will
+# simply fail to reach the SOCKS port until tor is back, then recover on its
+# own (Privoxy retries the upstream connection per-request, it doesn't need
+# to be restarted itself).
 #
-# It does not run Tor itself — point PRIVOXY_TOR_SOCKS_HOST/PORT at a
-# separate "tor" container's SOCKS port (see the "tor-privoxy" example
-# service in docker-compose.yml, which wires this to the plain "tor"
-# service over a Compose network).
+# PRIVOXY_ENABLE controls whether Privoxy runs at all in this image — the
+# same image can run Tor-only (PRIVOXY_ENABLE=false, the default) or
+# Tor+Privoxy together (PRIVOXY_ENABLE=true). When disabled, this script
+# blocks forever via `sleep infinity` instead of exiting, so s6 sees the
+# service as "up" and does not restart-loop it — a service in
+# /etc/services.d that exits immediately gets endlessly relaunched by s6,
+# which would spam logs for something that's deliberately turned off.
 #
-# All variables here use a PRIVOXY_ prefix, mirroring the TORRC_ prefix
-# convention used by entrypoint.sh, so it's clear at a glance which
-# config file/process a given env var feeds.
+# PRIVOXY_TOR_SOCKS_HOST defaults to 127.0.0.1 here, NOT "tor" — this is a
+# behavior change from the old, separate tor-privoxy image, where Tor and
+# Privoxy were different containers on a Compose network and had to be
+# reached by service name. In this merged image both processes share one
+# network namespace, so Privoxy reaches Tor's SOCKS port over loopback.
 #
 # NOTE on Alpine packaging: the privoxy apk package ships every stock
 # config/action/filter file with a ".new" suffix (default.filter.new,
@@ -30,13 +36,20 @@
 # -----------------------------------------------------------------------
 # Variables
 # -----------------------------------------------------------------------
+# PRIVOXY_ENABLE           default: false           -> when false, this
+#                           service idles (sleep infinity) instead of
+#                           running privoxy at all. Set true to enable the
+#                           HTTP/HTTPS front-end.
 # PRIVOXY_LISTEN_ADDRESS   default: 0.0.0.0        -> listen-address host
 # PRIVOXY_LISTEN_PORT      default: 8118           -> listen-address port
-# PRIVOXY_TOR_SOCKS_HOST   default: tor             -> host of the upstream
-#                           Tor SOCKS5 proxy (typically another container
-#                           on the same Compose network/service name).
+# PRIVOXY_TOR_SOCKS_HOST   default: 127.0.0.1      -> host of the upstream
+#                           Tor SOCKS5 proxy. Defaults to loopback since
+#                           tor runs in the same container/network
+#                           namespace as this service.
 # PRIVOXY_TOR_SOCKS_PORT   default: 9050            -> port of the
-#                           upstream Tor SOCKS5 proxy.
+#                           upstream Tor SOCKS5 proxy — should match
+#                           TORRC_SOCKS_PORT for the tor service in this
+#                           same container (also 9050 by default).
 # PRIVOXY_FORWARD_DNS      default: true            -> when true, uses
 #                           socks5t (Tor resolves DNS remotely, avoiding
 #                           local DNS leaks); when false, uses socks5
@@ -64,11 +77,19 @@
 # =============================================================================
 set -euo pipefail
 
+: "${PRIVOXY_ENABLE:=false}"
+
+if [ "${PRIVOXY_ENABLE}" != "true" ]; then
+    # Deliberately idle, not exit — see header comment. This keeps s6 from
+    # restart-looping a service that's intentionally turned off.
+    exec sleep infinity
+fi
+
 CONFIG=/etc/privoxy/config
 
 : "${PRIVOXY_LISTEN_ADDRESS:=0.0.0.0}"
 : "${PRIVOXY_LISTEN_PORT:=8118}"
-: "${PRIVOXY_TOR_SOCKS_HOST:=tor}"
+: "${PRIVOXY_TOR_SOCKS_HOST:=127.0.0.1}"
 : "${PRIVOXY_TOR_SOCKS_PORT:=9050}"
 : "${PRIVOXY_FORWARD_DNS:=true}"
 : "${PRIVOXY_ENABLE_FILTERS:=true}"
@@ -80,10 +101,6 @@ write_config() {
 
     echo "listen-address ${PRIVOXY_LISTEN_ADDRESS}:${PRIVOXY_LISTEN_PORT}" >> "${CONFIG}"
 
-    # socks5t = Privoxy sends the hostname to Tor and lets Tor resolve it
-    # (no local/host DNS leak). Plain socks5 resolves locally first, which
-    # defeats a chunk of the point of routing through Tor — only offered
-    # as an explicit opt-out, not a default.
     if [ "${PRIVOXY_FORWARD_DNS}" = "true" ]; then
         echo "forward-socks5t / ${PRIVOXY_TOR_SOCKS_HOST}:${PRIVOXY_TOR_SOCKS_PORT} ." >> "${CONFIG}"
     else
@@ -126,11 +143,4 @@ chown -R privoxy:privoxy /etc/privoxy /var/log/privoxy 2>/dev/null || true
 
 write_config
 
-case "${1:-privoxy}" in
-    privoxy)
-        exec su-exec privoxy privoxy --no-daemon "${CONFIG}"
-        ;;
-    *)
-        exec "$@"
-        ;;
-esac
+exec su-exec privoxy privoxy --no-daemon "${CONFIG}"

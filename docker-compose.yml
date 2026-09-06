@@ -4,26 +4,35 @@
 #   bash bake.sh --push         # ...and pushes it to REGISTRY
 #   docker compose up tor       # run it
 #
+# ONE image now runs both Tor and (optionally) Privoxy, supervised
+# independently by s6-overlay — see Tor/Dockerfile and
+# Tor/services/{tor,privoxy}/run. This replaces the previous separate
+# "tor" + "tor-privoxy" images: Privoxy is now PRIVOXY_ENABLE, a runtime
+# toggle on the same image, not a second container to run. If tor
+# crashes, s6 restarts only tor inside the container; privoxy (if
+# enabled) keeps running and just fails to reach the SOCKS port until
+# tor's back up.
+#
 # SOCKS5, ControlPort, Hidden Service, exit/entry node selection, and
-# bridges are all runtime toggles (entrypoint.sh writes torrc from these
-# env vars at container start) — not separate images. Enable whichever
-# you need per-deployment.
+# bridges are all runtime toggles (the "tor" s6 service writes torrc from
+# these env vars at container start). All use a TORRC_ prefix — see
+# Tor/services/tor/run's header comment for the full reference.
 #
-# All runtime-config vars use a TORRC_ prefix (e.g. TORRC_ENABLE_SOCKS,
-# TORRC_EXIT_NODES) — see Tor/entrypoint.sh's header comment for the
-# full reference.
-#
-# Privoxy (tor-privoxy service/image) is a SEPARATE build target/image —
-# an HTTP/HTTPS proxy front-end that forwards to a Tor SOCKS5 proxy over
-# the network, for clients that can't speak SOCKS directly. It does not
-# run Tor itself. Its own vars use a PRIVOXY_ prefix — see
-# Tor/privoxy-entrypoint.sh's header comment for the full reference.
+# Privoxy vars use a PRIVOXY_ prefix — see Tor/services/privoxy/run's
+# header comment for the full reference. PRIVOXY_TOR_SOCKS_HOST defaults
+# to 127.0.0.1 since Privoxy now reaches Tor over loopback within the
+# same container, not over a Compose network by service name.
 #
 # Multi-port hidden service: TORRC_HS_PORTS is a comma-separated list of
 # "<virtport>:<target>" pairs, e.g. "80:10.2.0.2:80,443:10.2.0.2:443" —
 # see the "tor-hs" example service below. TORRC_HS_PORT/TORRC_HS_TARGET
 # (singular) still work as shorthand for a single port; TORRC_HS_PORTS
 # takes priority when both are set.
+#
+# Secret-seeded key: mount an existing hs_ed25519_secret_key via
+# `secrets:` at /run/secrets/tor_hs_ed25519_secret_key (or override
+# TORRC_HS_SECRET_KEY_FILE) to reuse a known onion address instead of
+# letting Tor generate a new one on first start.
 #
 # SOCKS entry policy: TORRC_SOCKS_POLICY is a comma-separated list of
 # "accept <CIDR>" / "reject <CIDR>" entries, written as one SocksPolicy
@@ -34,13 +43,24 @@
 # without needing to set this explicitly. See the "tor-socks-policy"
 # example service below for a tighter, explicit override.
 #
-# Secret-seeded key: mount an existing hs_ed25519_secret_key via
-# `secrets:` at /run/secrets/tor_hs_ed25519_secret_key (or override
-# TORRC_HS_SECRET_KEY_FILE) to reuse a known onion address instead of
-# letting Tor generate a new one on first start.
+# Outbound firewall: TORRC_ENABLE_FIREWALL=true applies an iptables
+# ruleset (default-deny) that permits only loopback traffic,
+# established/related connections, and new outbound connections opened
+# by the tor or privoxy process UIDs. Everything else — any other
+# process in this container, or any process in another container sharing
+# this one's network namespace via `network_mode: "service:tor"` — gets
+# refused, never falls back to a direct connection. See the
+# "tor-locked-down" / "client" pair below. Requires
+# `cap_add: [NET_ADMIN]` on the tor service.
+#
+# The same default-deny extends to new *inbound* connections, so a
+# published `ports:` mapping is unreachable by default even with a real
+# listener behind it (e.g. the "client" browser's noVNC UI below on
+# 3000/3001) — TORRC_FIREWALL_ALLOW_INBOUND_PORTS opens specific ports
+# back up for exactly this case; see "tor-locked-down" below.
 
 services:
-  # Plain SOCKS5 proxy — no hidden service.
+  # Plain SOCKS5 proxy — no hidden service, no Privoxy.
   tor:
     image: ghcr.io/arasemco/tor:latest
     hostname: tor
@@ -51,12 +71,38 @@ services:
       TORRC_ENABLE_HS: "false"
       TORRC_SOCKS_PORT: "9050"
       TORRC_CONTROL_PORT: "9051"
+      PRIVOXY_ENABLE: "false"
     ports:
       - "9050:9050"
       # Uncomment if TORRC_ENABLE_CONTROL=true:
       #- "9051:9051"
     volumes:
       - ./data/tor:/var/lib/tor
+
+  # SOCKS5 proxy PLUS a Privoxy HTTP/HTTPS front-end in the same
+  # container — for clients that can't speak SOCKS directly (some CLI
+  # tools, older apps). Both processes are supervised independently by
+  # s6-overlay: if one crashes, only that one restarts.
+  #
+  # Point HTTP/HTTPS clients at:
+  #   http_proxy=http://localhost:8118 https_proxy=http://localhost:8118
+  tor-privoxy:
+    image: ghcr.io/arasemco/tor:latest
+    hostname: tor-privoxy
+    restart: unless-stopped
+    environment:
+      TORRC_ENABLE_SOCKS: "true"
+      TORRC_SOCKS_PORT: "9050"
+      PRIVOXY_ENABLE: "true"
+      PRIVOXY_LISTEN_PORT: "8118"
+      PRIVOXY_TOR_SOCKS_PORT: "9050"
+      PRIVOXY_FORWARD_DNS: "true"
+      PRIVOXY_ENABLE_FILTERS: "true"
+#    ports:
+#      - "9051:9050"
+#      - "8118:8118"
+    volumes:
+      - ./data/tor-privoxy:/var/lib/tor
 
   # Same as "tor" above, but with an explicit, tighter SOCKS entry policy
   # — only two specific LAN ranges may use this proxy, everything else
@@ -71,10 +117,77 @@ services:
       TORRC_ENABLE_SOCKS: "true"
       TORRC_SOCKS_PORT: "9050"
       TORRC_SOCKS_POLICY: "accept 10.0.0.0/8,accept 172.16.0.0/12,accept 192.168.0.0/16,reject *"
+      PRIVOXY_ENABLE: "false"
     ports:
       - "9055:9050"
     volumes:
       - ./data/tor-socks-policy:/var/lib/tor
+
+  # Same idea as the plain "tor" service, but with TORRC_ENABLE_FIREWALL
+  # enabled and its own ports published here instead of on a downstream
+  # client, since a container sharing this network namespace (via
+  # network_mode below) cannot publish its own ports.
+  #
+  # "client" is a browser sharing this network namespace, so its outbound
+  # traffic can only reach the network through Tor/Privoxy — if Tor's
+  # SOCKS port becomes unreachable, "client" is cut off rather than
+  # falling back to a direct connection. Its noVNC web UI listens on
+  # 3000/3001 inside that shared namespace; TORRC_FIREWALL_ALLOW_INBOUND_PORTS
+  # is what makes those reachable from outside at all — the base firewall
+  # ruleset's INPUT chain is default-DROP for anything that isn't
+  # loopback or an established/related connection, so a fresh inbound
+  # connection to a published port is dropped before it reaches the
+  # listener unless its port is named here, regardless of whether
+  # something is genuinely bound to it.
+  #
+  # tor_locked_down_proxy_pac routes all of the client's traffic through
+  # this container's own SOCKS port. tor_locked_down_firefox_policies
+  # closes the leak vectors a PAC-only setup doesn't: WebRTC (the most
+  # common way to leak a real IP from behind any proxy, since it can
+  # negotiate a direct connection independent of browser proxy settings),
+  # Firefox's own background connectivity/captive-portal/Safe-Browsing/
+  # telemetry checks (which historically bypass PAC-configured proxies),
+  # DNS prefetching, and geolocation. See the README's "Browser hardening"
+  # notes for the full rationale per setting.
+  tor-locked-down:
+    image: ghcr.io/arasemco/tor:latest
+    hostname: tor-locked-down
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    environment:
+      TORRC_ENABLE_SOCKS: "true"
+      TORRC_SOCKS_PORT: "9050"
+      TORRC_ENABLE_FIREWALL: "true"
+      TORRC_FIREWALL_ALLOW_INBOUND_PORTS: "3000,3001"
+      PRIVOXY_ENABLE: "false"
+    ports:
+      - "9080:9050"
+      - "3010:3000"
+      - "3011:3001"
+    volumes:
+      - ./data/tor-locked-down:/var/lib/tor
+
+  client:
+    image: lscr.io/linuxserver/firefox:latest
+    network_mode: "service:tor-locked-down"
+    shm_size: "1gb"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    configs:
+      - source: tor_locked_down_proxy_pac
+        target: /defaults/proxy.pac
+        mode: 0444
+      - source: tor_locked_down_firefox_policies
+        target: /usr/lib/firefox/distribution/policies.json
+        mode: 0444
+      - source: tor_locked_down_firefox_defaults
+        target: /usr/lib/firefox/browser/defaults/preferences/999-tor-locked-down.js
+        mode: 0444
+    depends_on:
+      - tor-locked-down
 
   # SOCKS5 proxy restricted to exit nodes in specific countries, refusing
   # to fall back elsewhere (StrictNodes). Also excludes a couple of
@@ -91,6 +204,7 @@ services:
       TORRC_EXCLUDE_EXIT_NODES: "{ru},{by}"
       TORRC_EXCLUDE_NODES: "{ru}"
       TORRC_STRICT_NODES: "true"
+      PRIVOXY_ENABLE: "false"
     ports:
       - "9060:9050"
     volumes:
@@ -114,34 +228,11 @@ services:
       # real newlines.
       TORRC_BRIDGE_LINES: |
         obfs4 192.0.2.1:443 0000000000000000000000000000000000000A cert=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA iat-mode=0
+      PRIVOXY_ENABLE: "false"
     ports:
       - "9070:9050"
     volumes:
       - ./data/tor-bridges:/var/lib/tor
-
-  # Privoxy front-end for the plain "tor" service above — gives HTTP/
-  # HTTPS-only clients (anything that can't speak SOCKS directly, e.g.
-  # some CLI tools, older apps) a plain http_proxy interface into Tor.
-  # This is a SEPARATE image (ghcr.io/arasemco/tor-privoxy), built from
-  # the "tor-privoxy" bake target — it does not run Tor itself, it
-  # forwards to the "tor" service's SOCKS port over the Compose network.
-  #
-  # Point clients at it with:
-  #   http_proxy=http://localhost:8118 https_proxy=http://localhost:8118
-  tor-privoxy:
-    image: ghcr.io/arasemco/tor-privoxy:latest
-    hostname: tor-privoxy
-    restart: unless-stopped
-    depends_on:
-      - tor
-    environment:
-      PRIVOXY_LISTEN_PORT: "8118"
-      PRIVOXY_TOR_SOCKS_HOST: "tor"
-      PRIVOXY_TOR_SOCKS_PORT: "9050"
-      PRIVOXY_FORWARD_DNS: "true"
-      PRIVOXY_ENABLE_FILTERS: "true"
-    ports:
-      - "8118:8118"
 
   # Hidden service on multiple ports, reusing a pre-existing onion key
   # from a Docker secret. Onion routing needs no host `ports:` mapping —
@@ -153,6 +244,7 @@ services:
     environment:
       TORRC_ENABLE_HS: "true"
       TORRC_HS_PORTS: "80:10.2.0.2:80,443:10.2.0.2:443"
+      PRIVOXY_ENABLE: "false"
     secrets:
       - tor_hs_ed25519_secret_key
     volumes:
@@ -171,3 +263,231 @@ networks:
 secrets:
   tor_hs_ed25519_secret_key:
     file: /path/to/onion/keys/folder/hs_ed25519_secret_key
+
+configs:
+  tor_locked_down_proxy_pac:
+    content: |
+      function FindProxyForURL(url, host) {
+        return "SOCKS5 127.0.0.1:9050; SOCKS 127.0.0.1:9050";
+      }
+
+  # Sets prefs the enterprise-policy mechanism (policies.json's
+  # Preferences key, above) refuses with "Preference not allowed for
+  # stability reasons" — visible at about:policies#errors. Files under
+  # browser/defaults/preferences/ are read at every Firefox startup
+  # before any profile loads, same mechanism the base linuxserver/firefox
+  # image itself already uses to bake in its own default telemetry prefs
+  # (see its Dockerfile) — unlike policies.json's Preferences key, this
+  # mechanism isn't restricted by the same stability blocklist. Numbered
+  # 999- so it loads after the image's own defaults file and its values
+  # win on any overlap.
+  #
+  # privacy.resistFingerprinting is the main addition here: it's what
+  # randomizes canvas/WebGL/audio readback output, which
+  # EnableTrackingProtection's Fingerprinting flag (in policies.json)
+  # does not do — that flag blocks known fingerprinting scripts, not
+  # the underlying canvas/WebGL APIs a site's own first-party code can
+  # still call directly. Unlike policy Preferences, these are regular
+  # (non-locked) defaults — the user could override them at
+  # about:config, which policy-locked prefs prevent; there's no
+  # policy-level equivalent available for this specific pref.
+  tor_locked_down_firefox_defaults:
+    content: |
+      pref("privacy.resistFingerprinting", true);
+      pref("privacy.resistFingerprinting.pbmode", true);
+
+  # See the README's "Browser hardening" section for the rationale
+  # behind each setting below. This is the same policy referenced from
+  # a full standalone browser-hardening writeup; kept here so the
+  # "tor-locked-down" / "client" example is leak-safe out of the box
+  # rather than only proxy-configured.
+  tor_locked_down_firefox_policies:
+    content: |
+      {
+        "policies": {
+          "Proxy": {
+            "Mode": "autoConfig",
+            "AutoConfigURL": "file:///defaults/proxy.pac",
+            "Locked": true
+          },
+          "Preferences": {
+            "network.proxy.socks_remote_dns": {
+              "Value": true,
+              "Status": "locked"
+            },
+            "network.proxy.socks5_remote_dns": {
+              "Value": true,
+              "Status": "locked"
+            },
+            "network.proxy.allow_bypass": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "network.proxy.failover_direct": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "network.proxy.no_proxies_on": {
+              "Value": "",
+              "Status": "locked"
+            },
+            "network.file.disable_uri_open": {
+              "Value": true,
+              "Status": "locked"
+            },
+            "media.peerconnection.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "media.peerconnection.ice.default_address_only": {
+              "Value": true,
+              "Status": "locked"
+            },
+            "media.peerconnection.ice.no_host": {
+              "Value": true,
+              "Status": "locked"
+            },
+            "network.captive-portal-service.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "network.connectivity-service.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "network.dns.disablePrefetch": {
+              "Value": true,
+              "Status": "locked"
+            },
+            "network.dns.disablePrefetchFromHTTPS": {
+              "Value": true,
+              "Status": "locked"
+            },
+            "network.predictor.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "network.prefetch-next": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "network.http.speculative-parallel-limit": {
+              "Value": 0,
+              "Status": "locked"
+            },
+            "geo.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "geo.provider.network.url": {
+              "Value": "",
+              "Status": "locked"
+            },
+            "browser.region.network.url": {
+              "Value": "",
+              "Status": "locked"
+            },
+            "browser.region.update.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "browser.safebrowsing.malware.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "browser.safebrowsing.phishing.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "browser.safebrowsing.downloads.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "browser.safebrowsing.downloads.remote.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "browser.safebrowsing.provider.google4.updateURL": {
+              "Value": "",
+              "Status": "locked"
+            },
+            "browser.newtabpage.activity-stream.feeds.telemetry": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "browser.ping-centre.telemetry": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "app.update.checkInstallTime": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "extensions.blocklist.enabled": {
+              "Value": false,
+              "Status": "locked"
+            },
+            "webgl.disabled": {
+              "Value": true,
+              "Status": "locked"
+            },
+            "ui.systemUsesDarkTheme": {
+              "Value": 1,
+              "Status": "locked"
+            },
+            "layout.css.prefers-color-scheme.content-override": {
+              "Value": 0,
+              "Status": "locked"
+            }
+          },
+          "EnableTrackingProtection": {
+            "Value": true,
+            "Fingerprinting": true,
+            "Cryptomining": true,
+            "Locked": true
+          },
+          "ExtensionSettings": {
+            "uBlock0@raymondhill.net": {
+              "install_url": "https://addons.mozilla.org/firefox/downloads/latest/uBlock0@raymondhill.net/latest.xpi",
+              "installation_mode": "force_installed"
+            }
+          },
+          "SearchEngines": {
+            "Default": "DuckDuckGo",
+            "PreventInstalls": true
+          },
+          "PasswordManagerEnabled": false,
+          "PrimaryPassword": false,
+          "DisableTelemetry": true,
+          "DisableFirefoxAccounts": true,
+          "DisableFirefoxScreenshots": true,
+          "DisableFirefoxStudies": true,
+          "DisablePocket": true,
+          "DisableSetDesktopBackground": true,
+          "DisableSystemAddonUpdate": true,
+          "DisableAppUpdate": true,
+          "CaptivePortal": false,
+          "NetworkPrediction": false,
+          "DontCheckDefaultBrowser": true,
+          "OverrideFirstRunPage": "",
+          "OverridePostUpdatePage": "",
+          "UserMessaging": {
+            "ExtensionRecommendations": false,
+            "FeatureRecommendations": false,
+            "UrlbarInterventions": false,
+            "SkipOnboarding": true,
+            "MoreFromMozilla": false,
+            "Locked": true
+          },
+          "FirefoxHome": {
+            "Search": true,
+            "TopSites": false,
+            "SponsoredTopSites": false,
+            "Highlights": false,
+            "Pocket": false,
+            "SponsoredPocket": false,
+            "Snippets": false,
+            "Locked": true
+          }
+        }
+      }
