@@ -101,6 +101,14 @@ variable "GIT_REF" { default = "unknown" }
 // mapping in the Dockerfile before adding other platforms here.
 variable "PLATFORMS" { default = "linux/amd64" }
 
+// Build layers are cached in the registry as tor:buildcache and always read
+// from. Writing needs push rights, so it is off unless CACHE_WRITE=true
+// (CI sets it on push/tag runs; pull requests only read).
+variable "CACHE_WRITE" {
+  type    = bool
+  default = false
+}
+
 
 // -----------------------------------------------------------------------
 // Labels
@@ -207,4 +215,7 @@ target "tor" {
   )
 
   platforms = split(",", PLATFORMS)
+
+  cache-from = ["type=registry,ref=${REGISTRY}/tor:buildcache"]
+  cache-to   = CACHE_WRITE ? ["type=registry,ref=${REGISTRY}/tor:buildcache,mode=max"] : []
 }

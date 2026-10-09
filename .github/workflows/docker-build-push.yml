@@ -121,10 +121,8 @@ jobs:
         uses: docker/bake-action@v7
         with:
           push: ${{ github.event_name != 'pull_request' }}
-          set: |
-            *.cache-from=type=registry,ref=${{ steps.vars.outputs.registry }}/tor:buildcache
-            ${{ github.event_name != 'pull_request' && format('*.cache-to=type=registry,ref={0}/tor:buildcache,mode=max', steps.vars.outputs.registry) || '' }}
         env:
+          CACHE_WRITE: ${{ github.event_name != 'pull_request' }}
           REGISTRY: ${{ steps.vars.outputs.registry }}
           SOURCE_URL: ${{ steps.vars.outputs.source_url }}
           GIT_SHA: ${{ steps.vars.outputs.git_sha }}
