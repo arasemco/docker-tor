@@ -76,7 +76,7 @@ function "pinned_ref" {
 // apk policy tor nyx lyrebird privoxy" — these drift over time as Alpine
 // repos update, and a stale pin here is a build-time failure, not a
 // silent problem, so it's always caught before shipping.
-variable "TOR_VERSION"      { default = "0.4.9.12-r0" }
+variable "TOR_VERSION"      { default = "0.4.9.14-r0" }
 variable "NYX_VERSION"      { default = "2.1.0-r6"    }
 variable "LYREBIRD_VERSION" { default = "0.8.1-r6"    }
 variable "PRIVOXY_VERSION"  { default = "4.0.0-r0"    }
