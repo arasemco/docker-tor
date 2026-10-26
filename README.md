@@ -85,6 +85,12 @@ before the firewall rules are created. Startup aborts if the id isn't a
 positive integer or already belongs to another account. `privoxy` is not
 remapped.
 
+> **Firewall caveat:** don't set `PUID` to a uid that any process in a
+> container sharing this one's network namespace runs as (for example the
+> `client` browser below, which runs as `1000`). The firewall allows
+> outbound traffic by numeric uid, so that process would get past it. The
+> startup check can only see this container's own users.
+
 ### SOCKS entry policy
 
 | Variable | Default | Description |
@@ -343,8 +349,9 @@ Only the secret key is seeded — Tor derives the matching public key and
 ### Persistence
 
 Mount volumes over `/var/lib/tor` (Tor's data directory, including the
-hidden service key/state) and `/etc/tor` (the generated `torrc`) if you
-need state to survive container recreation — see the `tor-hs` example
+hidden service key/state) and `/etc/tor` (the generated `torrc`, owned by
+root and only readable by the `tor` group) if you need state to survive
+container recreation — see the `tor-hs` example
 service in `docker-compose.yml`.
 
 ## Security notes

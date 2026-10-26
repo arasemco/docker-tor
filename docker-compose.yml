@@ -40,7 +40,13 @@
 # accepting all private/local networks (loopback, link-local, RFC1918 —
 # Tor's built-in "private" alias) and rejecting everything else, so a
 # bare TORRC_ENABLE_SOCKS=true is safe-by-default for local/LAN clients
-# without needing to set this explicitly. See the "tor-socks-policy"
+# without needing to set this explicitly. Caveat: the policy trusts the
+# source address Tor sees. Where Docker forwards a published port through
+# its userland proxy (rootless Docker, Docker Desktop, IPv6 clients to an
+# IPv4 container), every client appears to come from the private bridge
+# gateway and is accepted. On those setups, publish SOCKS ports as
+# "127.0.0.1:9050:9050" (or a specific LAN IP) rather than on all
+# interfaces. See the "tor-socks-policy"
 # example service below for a tighter, explicit override.
 #
 # Outbound firewall: TORRC_ENABLE_FIREWALL=true applies an iptables
@@ -168,8 +174,12 @@ services:
       PRIVOXY_ENABLE: "false"
     ports:
       - "9080:9050"
-      - "3010:3000"
-      - "3011:3001"
+      # The browser's noVNC UI has no login unless the client sets
+      # CUSTOM_USER/PASSWORD, so it is published on loopback only. To
+      # reach it from another machine, set those on "client" first, then
+      # drop the 127.0.0.1: prefix.
+      - "127.0.0.1:3010:3000"
+      - "127.0.0.1:3011:3001"
     volumes:
       - ./data/tor-locked-down:/var/lib/tor
 

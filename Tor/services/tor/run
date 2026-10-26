@@ -119,9 +119,18 @@ DEFAULT_SOCKS_POLICY="accept private:*,reject *"
 : "${TORRC_BRIDGE_TRANSPORT:=obfs4}"
 : "${TORRC_LYREBIRD_PATH:=/usr/bin/lyrebird}"
 
+# Runs a command as the tor user. Used for every write inside the
+# tor-owned data directory, so a symlink planted there by the tor user can
+# never redirect a root-privileged write elsewhere.
+as_tor() {
+    su-exec tor "$@"
+}
+
 seed_hs_key() {
     if [ -f "${TORRC_HS_SECRET_KEY_FILE}" ]; then
-        install -o tor -g tor -m 600 "${TORRC_HS_SECRET_KEY_FILE}" "${HS_DIR}/hs_ed25519_secret_key"
+        # Root opens the secret (it may be root-only); tor writes the copy.
+        as_tor sh -c 'umask 077; cat > "$1" && chmod 600 "$1"' sh "${HS_DIR}/hs_ed25519_secret_key" \
+            < "${TORRC_HS_SECRET_KEY_FILE}"
     fi
 }
 
@@ -227,9 +236,8 @@ write_torrc() {
     fi
 
     if [ "${TORRC_ENABLE_HS}" = "true" ]; then
-        mkdir -p "${HS_DIR}"
-        chmod 700 "${HS_DIR}"
-        chown -R tor:tor "${HS_DIR}"
+        as_tor mkdir -p "${HS_DIR}"
+        as_tor chmod 700 "${HS_DIR}"
         seed_hs_key
         echo "HiddenServiceDir ${HS_DIR}" >> "${TORRC}"
 
@@ -253,10 +261,28 @@ mkdir -p "${DATA_DIR}"
 chown -R tor:tor "${DATA_DIR}"
 chmod 700 "${DATA_DIR}"
 
-mkdir -p "$(dirname "${TORRC}")"
-chown tor:tor "$(dirname "${TORRC}")"
+# /etc/tor and torrc stay owned by root and are only readable by tor. If
+# the tor user could write here, it could swap torrc for a symlink and make
+# this root-run script overwrite any file on the next restart.
+TORRC_DIR="$(dirname "${TORRC}")"
+mkdir -p "${TORRC_DIR}"
+chown root:tor "${TORRC_DIR}"
+chmod 750 "${TORRC_DIR}"
 
+# Build the config in a fresh temp file and rename it into place. rename
+# replaces a planted symlink rather than writing through it.
+FINAL_TORRC="${TORRC}"
+TORRC="$(mktemp "${TORRC_DIR}/.torrc.XXXXXX")"
+trap 'rm -f "${TORRC}"' EXIT
 write_torrc
-chown tor:tor "${TORRC}"
+chown root:tor "${TORRC}"
+chmod 640 "${TORRC}"
+# The directory is root-only now, so nothing can re-create a link between
+# the rm and the mv. rm first because mv onto a symlink to a directory
+# would move the file into that directory.
+rm -f "${FINAL_TORRC}"
+mv -f "${TORRC}" "${FINAL_TORRC}"
+trap - EXIT
+TORRC="${FINAL_TORRC}"
 
 exec su-exec tor tor -f "${TORRC}"

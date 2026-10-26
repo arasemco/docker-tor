@@ -13,8 +13,15 @@
 # must be created after the remap or it would match the old uid.
 #
 # Only "tor" is remapped. "privoxy" keeps its package uid; it stores nothing
-# on a user-mounted volume. tor/run chowns /var/lib/tor and /etc/tor to
-# tor:tor on every start, so existing data is re-owned automatically.
+# on a user-mounted volume. tor/run chowns /var/lib/tor to tor:tor on every
+# start, so existing data is re-owned automatically. (/etc/tor stays
+# root-owned and is only readable by the tor group.)
+#
+# Pick a PUID that no process in a container sharing this one's network
+# namespace runs as (e.g. linuxserver images default to 1000). The
+# firewall's `--uid-owner tor` rule matches by number across the shared
+# namespace, so that process would bypass it. This script can only check
+# for clashes in this container's /etc/passwd.
 #
 # Refuses (exits non-zero, aborting startup) if the requested id is not a
 # positive integer or already belongs to a different account, rather than
