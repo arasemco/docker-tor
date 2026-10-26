@@ -77,7 +77,7 @@ function "pinned_ref" {
 // silent problem, so it's always caught before shipping.
 variable "TOR_VERSION"      { default = "0.4.9.14-r0" }
 variable "NYX_VERSION"      { default = "2.1.0-r6"    }
-variable "LYREBIRD_VERSION" { default = "0.8.1-r6"    }
+variable "LYREBIRD_VERSION" { default = "0.8.1-r7"    }
 variable "PRIVOXY_VERSION"  { default = "4.0.0-r0"    }
 
 // s6-overlay release version — see Tor/Dockerfile's own comment for how
