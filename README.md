@@ -63,8 +63,10 @@ read by each s6-supervised service's `run` script on container start:
 |---|---|---|
 | `TORRC_ENABLE_SOCKS` | `false` | Enable the SOCKS5 proxy |
 | `TORRC_SOCKS_PORT` | `9050` | SOCKS5 listen port |
-| `TORRC_ENABLE_CONTROL` | `false` | Enable the Tor ControlPort (cookie auth only — see [Security notes](#security-notes)) |
+| `TORRC_ENABLE_CONTROL` | `false` | Enable the Tor ControlPort (cookie auth, plus password auth when a secret is provided — see [Security notes](#security-notes)) |
 | `TORRC_CONTROL_PORT` | `9051` | ControlPort listen port |
+| `TORRC_CONTROL_ADDRESS` | `127.0.0.1` | Interface the ControlPort binds to. A non-loopback address (e.g. `0.0.0.0` so a published port works) is refused at startup unless a control password is supplied. |
+| `TORRC_CONTROL_PASSWORD_FILE` | `/run/secrets/tor_control_password` | File with the **plaintext** control password (e.g. a Docker secret). Hashed with `tor --hash-password` at start and written as `HashedControlPassword`; the plaintext never goes into `torrc` or the environment. |
 | `TORRC_ENABLE_HS` | `false` | Enable the Hidden Service |
 | `TORRC_HS_PORT` / `TORRC_HS_TARGET` | `80` / `127.0.0.1:80` | Single-port hidden service shorthand |
 | `TORRC_HS_PORTS` | *(unset)* | Comma-separated `<virtport>:<target>` pairs for a multi-port hidden service, e.g. `80:10.2.0.2:80,443:10.2.0.2:443`. Takes priority over `TORRC_HS_PORT`/`TORRC_HS_TARGET` when set. |
@@ -265,7 +267,7 @@ reference.
 | Variable | Default | Description |
 |---|---|---|
 | `PRIVOXY_ENABLE` | `false` | Enable Privoxy. When `false`, the service idles and does nothing. |
-| `PRIVOXY_LISTEN_ADDRESS` | `0.0.0.0` | Interface Privoxy listens on |
+| `PRIVOXY_LISTEN_ADDRESS` | `127.0.0.1` | Interface Privoxy listens on. Set `0.0.0.0` to reach it from other containers/hosts (and pair it with `PRIVOXY_TRUSTED_CIDRS`). |
 | `PRIVOXY_LISTEN_PORT` | `8118` | Privoxy's HTTP proxy port |
 | `PRIVOXY_TOR_SOCKS_HOST` | `127.0.0.1` | Host of the upstream Tor SOCKS5 proxy — loopback by default since Tor runs in the same container |
 | `PRIVOXY_TOR_SOCKS_PORT` | `9050` | Port of the upstream Tor SOCKS5 proxy — should match `TORRC_SOCKS_PORT` |
@@ -334,10 +336,13 @@ service in `docker-compose.yml`.
 
 ## Security notes
 
-- `TORRC_ENABLE_CONTROL=true` enables `CookieAuthentication` only — no
-  password auth is configured. Don't expose the ControlPort beyond
-  `localhost`/a trusted network without adding `HashedControlPassword`
-  (via `tor --hash-password`) first.
+- `TORRC_ENABLE_CONTROL=true` binds the ControlPort to loopback
+  (`TORRC_CONTROL_ADDRESS=127.0.0.1`) with `CookieAuthentication`. To
+  reach it from outside the container, mount a secret with the control
+  password at `TORRC_CONTROL_PASSWORD_FILE` and set
+  `TORRC_CONTROL_ADDRESS=0.0.0.0`; startup aborts if you bind a
+  non-loopback address without a password. Still keep the port on a
+  trusted network.
 - The Hidden Service directory is set to `700` and its key file to
   `600`, owned by the `tor` user, on every container start.
 - `TORRC_STRICT_NODES=true` trades availability for guarantee: Tor will
@@ -347,10 +352,9 @@ service in `docker-compose.yml`.
   hostnames to whatever resolver the container/host uses, defeating part
   of the point of routing through Tor — leave this at its `true` default
   unless you specifically need local resolution.
-- `PRIVOXY_TRUSTED_CIDRS` is unset by default, meaning Privoxy accepts
-  connections from wherever `PRIVOXY_LISTEN_ADDRESS` binds (`0.0.0.0` by
-  default = everywhere). Set it explicitly in any deployment where the
-  Privoxy port might be reachable from an untrusted network.
+- Privoxy listens on loopback by default. If you set
+  `PRIVOXY_LISTEN_ADDRESS=0.0.0.0` to publish it, also set
+  `PRIVOXY_TRUSTED_CIDRS` (unset = accepts anyone who can reach the port).
 - Tor and Privoxy share one container/network namespace: a compromise of
   one process has local (loopback) network visibility into the other.
   This is the trade-off of running both in a single container instead of

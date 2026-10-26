@@ -74,7 +74,9 @@ services:
       PRIVOXY_ENABLE: "false"
     ports:
       - "9050:9050"
-      # Uncomment if TORRC_ENABLE_CONTROL=true:
+      # ControlPort: loopback-only by default. To publish it, also set
+      # TORRC_ENABLE_CONTROL=true, TORRC_CONTROL_ADDRESS=0.0.0.0 and mount
+      # the tor_control_password secret (see "secrets:" below):
       #- "9051:9051"
     volumes:
       - ./data/tor:/var/lib/tor
@@ -94,6 +96,9 @@ services:
       TORRC_ENABLE_SOCKS: "true"
       TORRC_SOCKS_PORT: "9050"
       PRIVOXY_ENABLE: "true"
+      # Loopback by default; uncomment (with the ports below) to expose it.
+      #PRIVOXY_LISTEN_ADDRESS: "0.0.0.0"
+      #PRIVOXY_TRUSTED_CIDRS: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
       PRIVOXY_LISTEN_PORT: "8118"
       PRIVOXY_TOR_SOCKS_PORT: "9050"
       PRIVOXY_FORWARD_DNS: "true"
@@ -261,6 +266,11 @@ networks:
   frontend:
 
 secrets:
+  # Plaintext control password, read from TORRC_CONTROL_PASSWORD_FILE
+  # (default /run/secrets/tor_control_password) and hashed at start.
+  # Attach it to a service with `secrets: [tor_control_password]`.
+  #tor_control_password:
+  #  file: ./secrets/tor_control_password
   tor_hs_ed25519_secret_key:
     file: /path/to/onion/keys/folder/hs_ed25519_secret_key
 

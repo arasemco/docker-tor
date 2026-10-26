@@ -40,7 +40,11 @@
 #                           service idles (sleep infinity) instead of
 #                           running privoxy at all. Set true to enable the
 #                           HTTP/HTTPS front-end.
-# PRIVOXY_LISTEN_ADDRESS   default: 0.0.0.0        -> listen-address host
+# PRIVOXY_LISTEN_ADDRESS   default: 127.0.0.1        -> listen-address host.
+#                           Loopback by default so the HTTP proxy isn't
+#                           reachable from other containers/hosts unless
+#                           you opt in (e.g. 0.0.0.0, ideally together with
+#                           PRIVOXY_TRUSTED_CIDRS).
 # PRIVOXY_LISTEN_PORT      default: 8118           -> listen-address port
 # PRIVOXY_TOR_SOCKS_HOST   default: 127.0.0.1      -> host of the upstream
 #                           Tor SOCKS5 proxy. Defaults to loopback since
@@ -70,7 +74,7 @@
 # PRIVOXY_TRUSTED_CIDRS    default: (unset)         -> comma-separated
 #                           CIDRs allowed to connect, written as
 #                           `permit-access` lines, e.g.
-#                           "10.0.0.0/8,192.168.0.0/16". When unset,
+#                           "1127.0.0.1/8,192.168.0.0/16". When unset,
 #                           Privoxy's default (accept from wherever
 #                           listen-address binds) applies — restrict this
 #                           in any multi-tenant/shared-network deployment.
@@ -87,7 +91,7 @@ fi
 
 CONFIG=/etc/privoxy/config
 
-: "${PRIVOXY_LISTEN_ADDRESS:=0.0.0.0}"
+: "${PRIVOXY_LISTEN_ADDRESS:=127.0.0.1}"
 : "${PRIVOXY_LISTEN_PORT:=8118}"
 : "${PRIVOXY_TOR_SOCKS_HOST:=127.0.0.1}"
 : "${PRIVOXY_TOR_SOCKS_PORT:=9050}"

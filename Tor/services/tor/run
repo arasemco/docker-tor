@@ -25,6 +25,18 @@
 # TORRC_SOCKS_PORT           default: 9050
 # TORRC_ENABLE_CONTROL       default: false
 # TORRC_CONTROL_PORT         default: 9051
+# TORRC_CONTROL_ADDRESS      default: 127.0.0.1 -> interface ControlPort binds
+#                             to. Anything other than loopback REQUIRES a
+#                             control password (below); startup aborts
+#                             otherwise rather than exposing an
+#                             unauthenticated-by-password ControlPort.
+# TORRC_CONTROL_PASSWORD_FILE default: /run/secrets/tor_control_password
+#                             -> file holding the PLAINTEXT control password
+#                             (e.g. a Docker secret). When present, it is
+#                             hashed with `tor --hash-password` at start and
+#                             written as HashedControlPassword; the plaintext
+#                             never lands in torrc or the environment.
+#                             CookieAuthentication stays on alongside it.
 # TORRC_ENABLE_HS            default: false
 # TORRC_HS_PORT/TORRC_HS_TARGET   single-port shorthand, default 80 / 127.0.0.1:80
 # TORRC_HS_PORTS             comma-separated "<virtport>:<target>" pairs,
@@ -76,6 +88,8 @@ HS_DIR="${DATA_DIR}/hidden_service"
 : "${TORRC_ENABLE_HS:=false}"
 : "${TORRC_SOCKS_PORT:=9050}"
 : "${TORRC_CONTROL_PORT:=9051}"
+: "${TORRC_CONTROL_ADDRESS:=127.0.0.1}"
+: "${TORRC_CONTROL_PASSWORD_FILE:=/run/secrets/tor_control_password}"
 : "${TORRC_HS_PORT:=80}"
 : "${TORRC_HS_TARGET:=127.0.0.1:80}"
 : "${TORRC_HS_PORTS:=}"
@@ -101,6 +115,31 @@ DEFAULT_SOCKS_POLICY="accept private:*,reject *"
 seed_hs_key() {
     if [ -f "${TORRC_HS_SECRET_KEY_FILE}" ]; then
         install -o tor -g tor -m 600 "${TORRC_HS_SECRET_KEY_FILE}" "${HS_DIR}/hs_ed25519_secret_key"
+    fi
+}
+
+write_control() {
+    local hashed=""
+
+    if [ -s "${TORRC_CONTROL_PASSWORD_FILE}" ]; then
+        # Strip a trailing newline so `echo "pw" > file` secrets work.
+        hashed="$(tor --hash-password "$(tr -d '\r\n' < "${TORRC_CONTROL_PASSWORD_FILE}")" | tail -n 1)"
+    fi
+
+    case "${TORRC_CONTROL_ADDRESS}" in
+        127.*|localhost|\[::1\]) ;;
+        *)
+            if [ -z "${hashed}" ]; then
+                echo "TORRC_CONTROL_ADDRESS=${TORRC_CONTROL_ADDRESS} is not loopback: provide a control password via ${TORRC_CONTROL_PASSWORD_FILE}" >&2
+                exit 1
+            fi
+            ;;
+    esac
+
+    echo "ControlPort ${TORRC_CONTROL_ADDRESS}:${TORRC_CONTROL_PORT}" >> "${TORRC}"
+    echo "CookieAuthentication 1" >> "${TORRC}"
+    if [ -n "${hashed}" ]; then
+        echo "HashedControlPassword ${hashed}" >> "${TORRC}"
     fi
 }
 
@@ -170,8 +209,7 @@ write_torrc() {
     fi
 
     if [ "${TORRC_ENABLE_CONTROL}" = "true" ]; then
-        echo "ControlPort 0.0.0.0:${TORRC_CONTROL_PORT}" >> "${TORRC}"
-        echo "CookieAuthentication 1" >> "${TORRC}"
+        write_control
     fi
 
     if [ "${TORRC_ENABLE_HS}" = "true" ]; then

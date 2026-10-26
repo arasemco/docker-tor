@@ -139,6 +139,7 @@ ARG TORRC_ENABLE_CONTROL=false
 ARG TORRC_ENABLE_HS=false
 ARG TORRC_SOCKS_PORT=9050
 ARG TORRC_CONTROL_PORT=9051
+ARG TORRC_CONTROL_ADDRESS=127.0.0.1
 ARG TORRC_HS_PORT=80
 ARG TORRC_HS_TARGET=127.0.0.1:80
 ARG TORRC_HS_PORTS=""
@@ -155,7 +156,7 @@ ARG TORRC_ENABLE_FIREWALL=false
 ARG TORRC_FIREWALL_ALLOW_INBOUND_PORTS=""
 
 ARG PRIVOXY_ENABLE=false
-ARG PRIVOXY_LISTEN_ADDRESS=0.0.0.0
+ARG PRIVOXY_LISTEN_ADDRESS=127.0.0.1
 ARG PRIVOXY_LISTEN_PORT=8118
 ARG PRIVOXY_TOR_SOCKS_HOST=127.0.0.1
 ARG PRIVOXY_TOR_SOCKS_PORT=9050
@@ -171,6 +172,8 @@ ENV TOR_VERSION=${TOR_VERSION} \
     TORRC_ENABLE_HS=${TORRC_ENABLE_HS} \
     TORRC_SOCKS_PORT=${TORRC_SOCKS_PORT} \
     TORRC_CONTROL_PORT=${TORRC_CONTROL_PORT} \
+    TORRC_CONTROL_ADDRESS=${TORRC_CONTROL_ADDRESS} \
+    TORRC_CONTROL_PASSWORD_FILE=/run/secrets/tor_control_password \
     TORRC_HS_PORT=${TORRC_HS_PORT} \
     TORRC_HS_TARGET=${TORRC_HS_TARGET} \
     TORRC_HS_PORTS=${TORRC_HS_PORTS} \
@@ -207,6 +210,9 @@ HEALTHCHECK --interval=300s --timeout=15s --start-period=60s --start-interval=10
         ok=0; \
         if [ "$TORRC_ENABLE_SOCKS" = "true" ]; then \
             curl -s -x socks5h://127.0.0.1:${TORRC_SOCKS_PORT} "https://check.torproject.org/api/ip" | grep -qm1 "\"IsTor\"[[:space:]]*:[[:space:]]*true" || ok=1; \
+        fi; \
+        if [ "$TORRC_ENABLE_HS" = "true" ]; then \
+            [ -s /var/lib/tor/hidden_service/hostname ] || ok=1; \
         fi; \
         if [ "$PRIVOXY_ENABLE" = "true" ]; then \
             curl -s -o /dev/null -x "http://127.0.0.1:${PRIVOXY_LISTEN_PORT}" "http://p.p/" || ok=1; \
