@@ -434,10 +434,12 @@ Or `docker run --rm alpine:edge sh -c "apk update && apk policy tor nyx lyrebird
 `S6_OVERLAY_VERSION` in `docker-bake.hcl` selects the s6-overlay release
 extracted into the image (see [Process supervision](#process-supervision-s6-overlay)
 below). Check [the releases page](https://github.com/just-containers/s6-overlay/releases)
-for the current version; the Dockerfile downloads and verifies both the
-noarch and architecture-specific tarballs against their published sha256
-checksums at build time, so a bad version string or corrupted download
-fails the build rather than shipping silently.
+for the current version, and update `S6_SHA256_NOARCH`,
+`S6_SHA256_X86_64` and `S6_SHA256_AARCH64` with the values from the
+release's `.sha256` files (in `docker-bake.hcl` and the Dockerfile `ARG`
+defaults). Both tarballs are checked against these pinned digests at
+build time, so a bad version, corrupted download or tampered release
+asset fails the build.
 
 ## Process supervision (s6-overlay)
 
@@ -470,7 +472,11 @@ earlier two-image design where Tor and Privoxy were separate containers
 
 `.github/workflows/` builds and pushes the `default` bake group on
 pushes to `main`, on version tags (`v*.*.*`), and on pull requests
-(build-only, no push). Works unmodified against GitHub Actions or a
+(build-only, no push). Before that, a `lint` job runs shellcheck,
+hadolint (ignores in `.hadolint.yaml`) and `docker compose config`, and
+a `test` job builds the image locally, runs
+`.github/scripts/smoke-test.sh` against it and prints a Trivy CVE
+report. Works unmodified against GitHub Actions or a
 compatible self-hosted Gitea Actions runner — the registry host and
 image prefix are derived from `github.server_url`/`github.repository`
 at runtime rather than hardcoded.
