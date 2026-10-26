@@ -30,6 +30,12 @@
 #                             control password (below); startup aborts
 #                             otherwise rather than exposing an
 #                             unauthenticated-by-password ControlPort.
+# TORRC_CONTROL_COOKIE_AUTH  default: true -> CookieAuthentication 1/0. Set
+#                             false to drop cookie auth, e.g. for a sidecar
+#                             in the same network namespace that can't read
+#                             the cookie file. With no password either, the
+#                             ControlPort is then UNAUTHENTICATED (only
+#                             allowed on loopback; a warning is logged).
 # TORRC_CONTROL_PASSWORD_FILE default: /run/secrets/tor_control_password
 #                             -> file holding the PLAINTEXT control password
 #                             (e.g. a Docker secret). When present, it is
@@ -89,6 +95,7 @@ HS_DIR="${DATA_DIR}/hidden_service"
 : "${TORRC_SOCKS_PORT:=9050}"
 : "${TORRC_CONTROL_PORT:=9051}"
 : "${TORRC_CONTROL_ADDRESS:=127.0.0.1}"
+: "${TORRC_CONTROL_COOKIE_AUTH:=true}"
 : "${TORRC_CONTROL_PASSWORD_FILE:=/run/secrets/tor_control_password}"
 : "${TORRC_HS_PORT:=80}"
 : "${TORRC_HS_TARGET:=127.0.0.1:80}"
@@ -137,7 +144,14 @@ write_control() {
     esac
 
     echo "ControlPort ${TORRC_CONTROL_ADDRESS}:${TORRC_CONTROL_PORT}" >> "${TORRC}"
-    echo "CookieAuthentication 1" >> "${TORRC}"
+    if [ "${TORRC_CONTROL_COOKIE_AUTH}" = "true" ]; then
+        echo "CookieAuthentication 1" >> "${TORRC}"
+    else
+        echo "CookieAuthentication 0" >> "${TORRC}"
+        if [ -z "${hashed}" ]; then
+            echo "WARNING: ControlPort has NO authentication (cookie auth off, no password)" >&2
+        fi
+    fi
     if [ -n "${hashed}" ]; then
         echo "HashedControlPassword ${hashed}" >> "${TORRC}"
     fi

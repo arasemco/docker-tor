@@ -1,0 +1,56 @@
+#!/command/with-contenv bash
+# =============================================================================
+# cont-init.d/05-ids — remaps the "tor" user/group to PUID/PGID so files on a
+# bind-mounted /var/lib/tor (e.g. ./data/tor) end up owned by a host user
+# instead of the image's fixed Alpine uid/gid.
+#
+# PUID   default: (unset) -> new uid for the "tor" user
+# PGID   default: (unset) -> new gid for the "tor" group (and the user's
+#                            primary group)
+#
+# Runs BEFORE cont-init.d/10-firewall on purpose: iptables resolves
+# `--uid-owner tor` to a numeric uid when the rule is inserted, so the rule
+# must be created after the remap or it would match the old uid.
+#
+# Only "tor" is remapped. "privoxy" keeps its package uid; it stores nothing
+# on a user-mounted volume. tor/run chowns /var/lib/tor and /etc/tor to
+# tor:tor on every start, so existing data is re-owned automatically.
+#
+# Refuses (exits non-zero, aborting startup) if the requested id is not a
+# positive integer or already belongs to a different account, rather than
+# silently sharing an id with another user.
+# =============================================================================
+set -euo pipefail
+
+: "${PUID:=}"
+: "${PGID:=}"
+
+PASSWD_FILE=/etc/passwd
+GROUP_FILE=/etc/group
+
+[ -n "${PUID}" ] || [ -n "${PGID}" ] || exit 0
+
+for var in PUID PGID; do
+    val="${!var}"
+    if [ -n "${val}" ] && ! [[ "${val}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "${var}=${val} is not a positive integer" >&2
+        exit 1
+    fi
+done
+
+cur_uid="$(awk -F: '$1=="tor"{print $3}' "${PASSWD_FILE}")"
+cur_gid="$(awk -F: '$1=="tor"{print $4}' "${PASSWD_FILE}")"
+new_uid="${PUID:-${cur_uid}}"
+new_gid="${PGID:-${cur_gid}}"
+
+if [ "${new_uid}" != "${cur_uid}" ] && awk -F: -v id="${new_uid}" '$3==id{f=1} END{exit !f}' "${PASSWD_FILE}"; then
+    echo "PUID=${new_uid} already belongs to another user" >&2
+    exit 1
+fi
+if [ "${new_gid}" != "${cur_gid}" ] && awk -F: -v id="${new_gid}" '$3==id{f=1} END{exit !f}' "${GROUP_FILE}"; then
+    echo "PGID=${new_gid} already belongs to another group" >&2
+    exit 1
+fi
+
+sed -i "s/^\(tor:[^:]*:\)[0-9]*:[0-9]*:/\1${new_uid}:${new_gid}:/" "${PASSWD_FILE}"
+sed -i "s/^\(tor:[^:]*:\)[0-9]*:/\1${new_gid}:/" "${GROUP_FILE}"

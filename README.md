@@ -66,11 +66,24 @@ read by each s6-supervised service's `run` script on container start:
 | `TORRC_ENABLE_CONTROL` | `false` | Enable the Tor ControlPort (cookie auth, plus password auth when a secret is provided — see [Security notes](#security-notes)) |
 | `TORRC_CONTROL_PORT` | `9051` | ControlPort listen port |
 | `TORRC_CONTROL_ADDRESS` | `127.0.0.1` | Interface the ControlPort binds to. A non-loopback address (e.g. `0.0.0.0` so a published port works) is refused at startup unless a control password is supplied. |
+| `TORRC_CONTROL_COOKIE_AUTH` | `true` | Set `false` to turn off cookie auth. With no control password either, the ControlPort is unauthenticated: allowed only on loopback, and a warning is logged. Anyone in the same network namespace (e.g. a `network_mode: service:tor` sidecar) can then control Tor. |
 | `TORRC_CONTROL_PASSWORD_FILE` | `/run/secrets/tor_control_password` | File with the **plaintext** control password (e.g. a Docker secret). Hashed with `tor --hash-password` at start and written as `HashedControlPassword`; the plaintext never goes into `torrc` or the environment. |
 | `TORRC_ENABLE_HS` | `false` | Enable the Hidden Service |
 | `TORRC_HS_PORT` / `TORRC_HS_TARGET` | `80` / `127.0.0.1:80` | Single-port hidden service shorthand |
 | `TORRC_HS_PORTS` | *(unset)* | Comma-separated `<virtport>:<target>` pairs for a multi-port hidden service, e.g. `80:10.2.0.2:80,443:10.2.0.2:443`. Takes priority over `TORRC_HS_PORT`/`TORRC_HS_TARGET` when set. |
 | `TORRC_HS_SECRET_KEY_FILE` | `/run/secrets/tor_hs_ed25519_secret_key` | Path to an existing `hs_ed25519_secret_key` to seed into the hidden service directory, so the container reuses a known onion address instead of generating a new one on first start |
+
+### File ownership (PUID / PGID)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PUID` | *(unset)* | Remap the `tor` user to this uid so a bind-mounted `/var/lib/tor` is owned by your host user |
+| `PGID` | *(unset)* | Remap the `tor` group to this gid |
+
+Applied at start by [`Tor/cont-init.d/05-ids`](./Tor/cont-init.d/05-ids),
+before the firewall rules are created. Startup aborts if the id isn't a
+positive integer or already belongs to another account. `privoxy` is not
+remapped.
 
 ### SOCKS entry policy
 
