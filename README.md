@@ -25,7 +25,7 @@ Built from Alpine, base image pinned by digest (see
 | Tag | Contents |
 |---|---|
 | `ghcr.io/arasemco/tor:latest` | Latest build off `main` |
-| `ghcr.io/arasemco/tor:<TOR_VERSION>` | Pinned to a specific Tor package version, e.g. `0.4.9.11-r0` |
+| `ghcr.io/arasemco/tor:<TOR_VERSION>` | Pinned to a specific Tor package version, e.g. `0.4.9.12-r0` |
 
 One image, built from [`Tor/Dockerfile`](./Tor/Dockerfile). Tor always
 runs; Privoxy is present in every build but only actually starts when

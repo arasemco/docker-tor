@@ -59,26 +59,43 @@ set -euo pipefail
 
 [ "${TORRC_ENABLE_FIREWALL}" = "true" ] || exit 0
 
-iptables -F
-iptables -X
+# The same ruleset is applied to both iptables (IPv4) and ip6tables (IPv6)
+# so a container with IPv6 connectivity can't bypass the lockdown over v6.
+apply_rules() {
+    local ipt="$1"
 
-iptables -P INPUT DROP
-iptables -P FORWARD DROP
-iptables -P OUTPUT DROP
+    "${ipt}" -F
+    "${ipt}" -X
 
-iptables -A INPUT -i lo -j ACCEPT
-iptables -A OUTPUT -o lo -j ACCEPT
+    "${ipt}" -P INPUT DROP
+    "${ipt}" -P FORWARD DROP
+    "${ipt}" -P OUTPUT DROP
 
-iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    "${ipt}" -A INPUT -i lo -j ACCEPT
+    "${ipt}" -A OUTPUT -o lo -j ACCEPT
 
-iptables -A OUTPUT -m owner --uid-owner tor -j ACCEPT
-iptables -A OUTPUT -m owner --uid-owner privoxy -j ACCEPT
+    "${ipt}" -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    "${ipt}" -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-if [ -n "${TORRC_FIREWALL_ALLOW_INBOUND_PORTS}" ]; then
-    IFS=',' read -ra _allowed_ports <<< "${TORRC_FIREWALL_ALLOW_INBOUND_PORTS}"
-    for port in "${_allowed_ports[@]}"; do
-        port="$(echo "${port}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        [ -n "${port}" ] && iptables -A INPUT -p tcp --dport "${port}" -j ACCEPT
-    done
+    "${ipt}" -A OUTPUT -m owner --uid-owner tor -j ACCEPT
+    "${ipt}" -A OUTPUT -m owner --uid-owner privoxy -j ACCEPT
+
+    if [ -n "${TORRC_FIREWALL_ALLOW_INBOUND_PORTS}" ]; then
+        local _allowed_ports port
+        IFS=',' read -ra _allowed_ports <<< "${TORRC_FIREWALL_ALLOW_INBOUND_PORTS}"
+        for port in "${_allowed_ports[@]}"; do
+            port="$(echo "${port}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            if [ -n "${port}" ]; then
+                "${ipt}" -A INPUT -p tcp --dport "${port}" -j ACCEPT
+            fi
+        done
+    fi
+}
+
+apply_rules iptables
+
+# Containers without IPv6 support (kernel module absent, or the ip6_tables
+# table unavailable) have no v6 path to protect, so skip rather than abort.
+if ip6tables -L -n >/dev/null 2>&1; then
+    apply_rules ip6tables
 fi

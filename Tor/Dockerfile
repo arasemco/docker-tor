@@ -29,9 +29,9 @@
 # Base image ref is pinned by digest and passed in from docker-bake.hcl
 # (via pinned_ref()) rather than hardcoded here — see that file's
 # ALPINE_BASE variable for the actual name:tag@digest value.
-ARG ALPINE_REF=docker.io/library/alpine:edge@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000
+ARG ALPINE_REF=docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
-ARG TOR_VERSION=0.4.9.11-r0
+ARG TOR_VERSION=0.4.9.12-r0
 ARG NYX_VERSION=2.1.0-r6
 ARG LYREBIRD_VERSION=0.8.1-r6
 ARG PRIVOXY_VERSION=4.0.0-r0

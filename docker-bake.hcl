@@ -47,11 +47,10 @@ variable "PROVENANCE_METADATA" {
 // (including "edge") can be repointed upstream at any time, so pinning
 // here guarantees every build starts from the exact same layer.
 //
-// NOTE: the digest below is a PLACEHOLDER. Resolve the real one before
-// building:
-//   docker pull alpine:edge --platform linux/amd64
-//   docker inspect --format='{{index .RepoDigests 0}}' alpine:edge
-// and paste the sha256:... value in here.
+// To bump, resolve the new digest and paste it in below (and keep
+// Tor/Dockerfile's ALPINE_REF default in sync):
+//   docker pull alpine:<tag> --platform linux/amd64
+//   docker inspect --format='{{index .RepoDigests 0}}' alpine:<tag>
 variable "ALPINE_BASE" {
   default = {
     name   = "docker.io/library/alpine"

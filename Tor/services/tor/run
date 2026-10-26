@@ -110,7 +110,9 @@ write_socks_policy() {
     IFS=',' read -ra _socks_policy_entries <<< "${TORRC_SOCKS_POLICY}"
     for entry in "${_socks_policy_entries[@]}"; do
         entry="$(echo "${entry}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        [ -n "${entry}" ] && echo "SocksPolicy ${entry}" >> "${TORRC}"
+        if [ -n "${entry}" ]; then
+            echo "SocksPolicy ${entry}" >> "${TORRC}"
+        fi
     done
 }
 
@@ -147,7 +149,9 @@ write_bridges() {
     if [ -n "${TORRC_BRIDGE_LINES}" ]; then
         normalized="${TORRC_BRIDGE_LINES//\\n/$'\n'}"
         while IFS= read -r line; do
-            [ -n "${line}" ] && echo "Bridge ${line}" >> "${TORRC}"
+            if [ -n "${line}" ]; then
+                echo "Bridge ${line}" >> "${TORRC}"
+            fi
         done <<< "${normalized}"
     fi
 }
