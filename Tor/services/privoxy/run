@@ -135,16 +135,35 @@ write_config() {
 
 mkdir -p /etc/privoxy /var/log/privoxy
 
+# Only the log dir is writable by privoxy. /etc/privoxy and its files stay
+# root-owned and privoxy-readable, so the privoxy user can't plant a
+# symlink that this root-run script would write through on restart.
+chown -R privoxy:privoxy /var/log/privoxy 2>/dev/null || true
+chown root:privoxy /etc/privoxy
+chmod 750 /etc/privoxy
+# Recursive part tolerates read-only bind-mounted files (e.g. user.action).
+chown -R root:privoxy /etc/privoxy 2>/dev/null || true
+chmod -R g+rX,g-w,o-rwx /etc/privoxy 2>/dev/null || true
+
 for staged in /etc/privoxy/*.new; do
     [ -e "${staged}" ] || continue
     target="${staged%.new}"
-    if [ ! -e "${target}" ]; then
+    if [ ! -e "${target}" ] && [ ! -L "${target}" ]; then
         cp "${staged}" "${target}"
     fi
 done
 
-chown -R privoxy:privoxy /etc/privoxy /var/log/privoxy 2>/dev/null || true
-
+# Build the config in a fresh temp file and rename it into place (rm first
+# so a symlink to a directory can't redirect the mv).
+FINAL_CONFIG="${CONFIG}"
+CONFIG="$(mktemp /etc/privoxy/.config.XXXXXX)"
+trap 'rm -f "${CONFIG}"' EXIT
 write_config
+chown root:privoxy "${CONFIG}"
+chmod 640 "${CONFIG}"
+rm -f "${FINAL_CONFIG}"
+mv -f "${CONFIG}" "${FINAL_CONFIG}"
+trap - EXIT
+CONFIG="${FINAL_CONFIG}"
 
 exec su-exec privoxy privoxy --no-daemon "${CONFIG}"

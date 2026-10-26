@@ -39,11 +39,15 @@ ARG PRIVOXY_VERSION=4.0.0-r0
 # s6-overlay release version and its checksums — pinned explicitly rather
 # than tracking "latest", same rationale as every other pin in this
 # Dockerfile. Bump by checking https://github.com/just-containers/s6-overlay/releases
-# for a new version tag and updating S6_OVERLAY_VERSION below; the
-# .sha256 files are fetched from the same release and verified at build
-# time (see the RUN step), so a corrupted/tampered download fails the
-# build rather than silently shipping.
+# for a new version tag and updating S6_OVERLAY_VERSION below, together
+# with the three S6_SHA256_* digests (from each tarball's .sha256 file on
+# the release page). The digests are pinned here rather than downloaded
+# next to the tarballs, so a tampered release asset fails the build
+# instead of being checked against an equally tampered .sha256 file.
 ARG S6_OVERLAY_VERSION=3.2.3.0
+ARG S6_SHA256_NOARCH=b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf
+ARG S6_SHA256_X86_64=a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563
+ARG S6_SHA256_AARCH64=0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581
 
 
 # =============================================================================
@@ -63,24 +67,22 @@ ARG S6_OVERLAY_VERSION=3.2.3.0
 # both unconditionally would waste bandwidth and cache on whichever one
 # isn't being built.
 #
-# Verification still runs sha256sum -c against each tarball's published
-# .sha256 file in a RUN step, since neither ADD nor curl can check a
-# checksum they don't already know — using ADD --checksum=sha256:...
-# would mean hardcoding s6-overlay's release digests into this file,
-# repeated per architecture and re-pinned by hand on every version bump,
-# instead of verifying against the same published .sha256 files already
-# fetched here. Remote tar sources are not auto-extracted by ADD (unlike
+# Both tarballs are verified against the pinned S6_SHA256_* digests above:
+# the noarch one by ADD --checksum, the arch one by sha256sum -c in the
+# RUN step. Remote tar sources are not auto-extracted by ADD (unlike
 # local tar sources), so the tar -Jxpf extraction step below is required
 # regardless of fetch method.
 # =============================================================================
 FROM ${ALPINE_REF} AS s6
 
 ARG S6_OVERLAY_VERSION
+ARG S6_SHA256_NOARCH
+ARG S6_SHA256_X86_64
+ARG S6_SHA256_AARCH64
 
 RUN apk add --no-cache curl xz
 
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz.sha256 /tmp/
+ADD --checksum=sha256:${S6_SHA256_NOARCH} https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
 
 # NOTE: only amd64 and arm64 are mapped below since docker-bake.hcl's
 # PLATFORMS default is linux/amd64 only at present — extend this mapping
@@ -90,18 +92,17 @@ ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLA
 ARG TARGETARCH
 RUN set -euo pipefail; \
     case "${TARGETARCH}" in \
-        amd64) S6_ARCH=x86_64 ;; \
-        arm64) S6_ARCH=aarch64 ;; \
+        amd64) S6_ARCH=x86_64;  S6_SHA256="${S6_SHA256_X86_64}" ;; \
+        arm64) S6_ARCH=aarch64; S6_SHA256="${S6_SHA256_AARCH64}" ;; \
         *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     cd /tmp && \
     curl -fsSLO "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" && \
-    curl -fsSLO "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz.sha256" && \
-    sha256sum -c ./*.sha256 && \
+    echo "${S6_SHA256}  s6-overlay-${S6_ARCH}.tar.xz" | sha256sum -c - && \
     mkdir -p /s6-root && \
     tar -C /s6-root -Jxpf "s6-overlay-noarch.tar.xz" && \
     tar -C /s6-root -Jxpf "s6-overlay-${S6_ARCH}.tar.xz" && \
-    rm -f /tmp/*.tar.xz /tmp/*.sha256
+    rm -f /tmp/*.tar.xz
 
 
 # =============================================================================

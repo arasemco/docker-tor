@@ -15,7 +15,10 @@
 #                            OUTPUT all DROP) that permits only: loopback
 #                            traffic, established/related connections, and
 #                            new outbound connections opened by the "tor"
-#                            or "privoxy" process UIDs. Every other new
+#                            process UID (and "privoxy", only when
+#                            PRIVOXY_TOR_SOCKS_HOST points off-box —
+#                            by default Privoxy only talks to Tor over
+#                            loopback, which needs no rule). Every other new
 #                            outbound connection attempt — from any other
 #                            process in this container, or from any
 #                            process in another container sharing this
@@ -78,7 +81,9 @@ apply_rules() {
     "${ipt}" -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
     "${ipt}" -A OUTPUT -m owner --uid-owner tor -j ACCEPT
-    "${ipt}" -A OUTPUT -m owner --uid-owner privoxy -j ACCEPT
+    if [ "${privoxy_needs_egress}" = "true" ]; then
+        "${ipt}" -A OUTPUT -m owner --uid-owner privoxy -j ACCEPT
+    fi
 
     if [ -n "${TORRC_FIREWALL_ALLOW_INBOUND_PORTS}" ]; then
         local _allowed_ports port
@@ -91,6 +96,16 @@ apply_rules() {
         done
     fi
 }
+
+# Privoxy only needs to reach the network when its upstream Tor SOCKS
+# proxy lives somewhere other than this container's loopback.
+privoxy_needs_egress=false
+if [ "${PRIVOXY_ENABLE:-false}" = "true" ]; then
+    case "${PRIVOXY_TOR_SOCKS_HOST:-127.0.0.1}" in
+        127.*|localhost|::1|\[::1\]) ;;
+        *) privoxy_needs_egress=true ;;
+    esac
+fi
 
 apply_rules iptables
 

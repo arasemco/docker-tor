@@ -1,0 +1,8 @@
+# Hadolint rules ignored on purpose, with the reason for each.
+ignored:
+  - DL3018  # apk packages that matter (tor, nyx, lyrebird, privoxy) are pinned; helpers like curl/bash follow the pinned Alpine base
+  - DL3003  # `cd /tmp` inside a single RUN in the throwaway s6 stage
+  - DL4006  # RUN steps with pipes set `-o pipefail` themselves
+  - SC3040  # /bin/sh is busybox ash, which supports pipefail
+  - DL3064  # flags TORRC_CONTROL_PASSWORD_FILE, which is a file path, not a secret
+  - DL3025  # HEALTHCHECK uses `sh -c` on purpose

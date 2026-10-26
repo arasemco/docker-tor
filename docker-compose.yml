@@ -52,7 +52,8 @@
 # Outbound firewall: TORRC_ENABLE_FIREWALL=true applies an iptables
 # ruleset (default-deny) that permits only loopback traffic,
 # established/related connections, and new outbound connections opened
-# by the tor or privoxy process UIDs. Everything else — any other
+# by the tor process UID (privoxy too, only if it forwards to a
+# non-loopback Tor). Everything else — any other
 # process in this container, or any process in another container sharing
 # this one's network namespace via `network_mode: "service:tor"` — gets
 # refused, never falls back to a direct connection. See the
@@ -65,10 +66,29 @@
 # 3000/3001) — TORRC_FIREWALL_ALLOW_INBOUND_PORTS opens specific ports
 # back up for exactly this case; see "tor-locked-down" below.
 
+# Least-privilege defaults shared by every tor service below: drop all
+# capabilities except what the startup scripts need (chown/chmod of
+# /var/lib/tor and /etc/tor, su-exec to the tor/privoxy users, s6
+# signalling those processes), and block privilege gain via setuid
+# binaries. tor-locked-down adds NET_ADMIN/NET_RAW on top for iptables.
+x-tor-hardening: &tor-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - DAC_OVERRIDE
+    - FOWNER
+    - KILL
+    - SETGID
+    - SETUID
+
 services:
   # Plain SOCKS5 proxy — no hidden service, no Privoxy.
   tor:
     image: ghcr.io/arasemco/tor:latest
+    <<: *tor-hardening
     hostname: tor
     restart: unless-stopped
     environment:
@@ -96,6 +116,7 @@ services:
   #   http_proxy=http://localhost:8118 https_proxy=http://localhost:8118
   tor-privoxy:
     image: ghcr.io/arasemco/tor:latest
+    <<: *tor-hardening
     hostname: tor-privoxy
     restart: unless-stopped
     environment:
@@ -122,6 +143,7 @@ services:
   # "accept private:*,reject *" default.
   tor-socks-policy:
     image: ghcr.io/arasemco/tor:latest
+    <<: *tor-hardening
     hostname: tor-socks-policy
     restart: unless-stopped
     environment:
@@ -162,10 +184,19 @@ services:
   # notes for the full rationale per setting.
   tor-locked-down:
     image: ghcr.io/arasemco/tor:latest
+    <<: *tor-hardening
     hostname: tor-locked-down
     restart: unless-stopped
+    # Replaces the shared cap_add list (YAML merge doesn't append lists).
     cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - SETGID
+      - SETUID
       - NET_ADMIN
+      - NET_RAW
     environment:
       TORRC_ENABLE_SOCKS: "true"
       TORRC_SOCKS_PORT: "9050"
@@ -184,7 +215,10 @@ services:
       - ./data/tor-locked-down:/var/lib/tor
 
   client:
-    image: lscr.io/linuxserver/firefox:latest
+    # Pinned by version and digest so a new upstream release can't change
+    # the browser under you. Bump both from
+    # https://hub.docker.com/r/linuxserver/firefox/tags
+    image: docker.io/linuxserver/firefox:1158.0.1build1-1xtradeb1.2404.1-ls132@sha256:c6acb3b01e34d45317d6f05daead8787f523161efa633bc8dc933132108eb51a
     network_mode: "service:tor-locked-down"
     shm_size: "1gb"
     environment:
@@ -210,6 +244,7 @@ services:
   # routing through Russia at any hop (entry, middle, or exit).
   tor-exit-select:
     image: ghcr.io/arasemco/tor:latest
+    <<: *tor-hardening
     hostname: tor-exit-select
     restart: unless-stopped
     environment:
@@ -231,6 +266,7 @@ services:
   # e.g. from https://bridges.torproject.org.
   tor-bridges:
     image: ghcr.io/arasemco/tor:latest
+    <<: *tor-hardening
     hostname: tor-bridges
     restart: unless-stopped
     environment:
@@ -255,6 +291,7 @@ services:
   # port — so nothing is exposed to the host here.
   tor-hs:
     image: ghcr.io/arasemco/tor:latest
+    <<: *tor-hardening
     restart: unless-stopped
     environment:
       TORRC_ENABLE_HS: "true"

@@ -138,7 +138,7 @@ or by emailing `bridges@torproject.org`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TORRC_ENABLE_FIREWALL` | `false` | Apply an iptables ruleset restricting all new outbound connections in this container to the `tor` and `privoxy` processes, before either service starts |
+| `TORRC_ENABLE_FIREWALL` | `false` | Apply an iptables ruleset restricting all new outbound connections in this container to the `tor` process (plus `privoxy` only if `PRIVOXY_TOR_SOCKS_HOST` is not loopback), before either service starts |
 | `TORRC_FIREWALL_ALLOW_INBOUND_PORTS` | *(empty)* | Comma-separated TCP ports to accept new inbound connections on, e.g. `3000,3001`. Only takes effect when `TORRC_ENABLE_FIREWALL=true`. |
 
 This targets a specific deployment shape: another container sharing this
@@ -146,8 +146,9 @@ container's network namespace via Compose's `network_mode:
 "service:tor"` (see the `tor-locked-down` / `client` pair in
 `docker-compose.yml`). A container attached this way has no network
 interface of its own — it uses the `tor` container's single interface
-directly. With the firewall enabled, only the `tor` and `privoxy`
-processes may open new outbound connections on that interface; loopback
+directly. With the firewall enabled, only the `tor` process (and
+`privoxy`, if it forwards to a non-loopback Tor) may open new outbound
+connections on that interface; loopback
 and already-established connections are still allowed, but a co-located
 process has no path to the network except through one of them. If Tor's
 SOCKS port (or Privoxy, when enabled) becomes unreachable, that process
@@ -379,6 +380,16 @@ service in `docker-compose.yml`.
   one process has local (loopback) network visibility into the other.
   This is the trade-off of running both in a single container instead of
   separate ones — weigh it against your threat model.
+- `/etc/tor` and `/etc/privoxy` (and the generated configs) are owned by
+  root and only readable by the daemon's group. The daemons can't change
+  their own config, and a compromised daemon can't trick the root-run
+  startup scripts into overwriting other files through a symlink.
+- The example services in `docker-compose.yml` drop all Linux
+  capabilities except the few the startup scripts need and set
+  `no-new-privileges`. Keep these settings when you write your own.
+- The s6-overlay tarballs are checked against digests pinned in
+  `Tor/Dockerfile` / `docker-bake.hcl`. Update them together with
+  `S6_OVERLAY_VERSION`.
 
 ## Building
 

@@ -15,7 +15,67 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Static checks: shellcheck on every shell script, hadolint on the
+  # Dockerfile (ignores and reasons live in .hadolint.yaml), and a compose
+  # file syntax check.
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -s bash -S warning \
+            Tor/cont-init.d/* Tor/services/*/run bake.sh .github/scripts/*.sh
+
+      - name: hadolint
+        run: docker run --rm -v "$PWD:/w" -w /w hadolint/hadolint:v2.12.0 hadolint Tor/Dockerfile
+
+      - name: docker compose config
+        run: docker compose -f docker-compose.yml config -q
+
+  # Builds the image locally (no push), runs it with the same reduced
+  # capabilities as docker-compose.yml and checks it starts correctly,
+  # then scans it for known CVEs. The scan reports only: an unfixed
+  # upstream CVE shouldn't block a release on its own.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image (load into Docker)
+        uses: docker/bake-action@v7
+        with:
+          load: true
+          set: |
+            tor.tags=tor-ci:test
+            tor.platform=linux/amd64
+
+      - name: Smoke test
+        run: .github/scripts/smoke-test.sh tor-ci:test
+
+      - name: Trivy scan
+        # Pinned to a commit SHA, not a tag: this action's tags have been
+        # hijacked before.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tor-ci:test
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+
   build-and-push:
+    needs: [lint, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read

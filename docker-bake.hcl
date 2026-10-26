@@ -80,10 +80,13 @@ variable "NYX_VERSION"      { default = "2.1.0-r6"    }
 variable "LYREBIRD_VERSION" { default = "0.8.1-r7"    }
 variable "PRIVOXY_VERSION"  { default = "4.0.0-r0"    }
 
-// s6-overlay release version — see Tor/Dockerfile's own comment for how
-// this is verified (sha256 checksums fetched and checked at build time).
-// Bump by checking https://github.com/just-containers/s6-overlay/releases.
+// s6-overlay release version and its pinned tarball digests. Bump all
+// four together from https://github.com/just-containers/s6-overlay/releases
+// (each tarball has a .sha256 file next to it).
 variable "S6_OVERLAY_VERSION" { default = "3.2.3.0" }
+variable "S6_SHA256_NOARCH"   { default = "b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf" }
+variable "S6_SHA256_X86_64"   { default = "a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563" }
+variable "S6_SHA256_AARCH64"  { default = "0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581" }
 
 // Default to "unknown" rather than empty string — a bare build outside of
 // bake.sh (or before the first commit) can't know these, and "unknown" is
@@ -195,6 +198,9 @@ target "tor" {
     LYREBIRD_VERSION   = LYREBIRD_VERSION
     PRIVOXY_VERSION    = PRIVOXY_VERSION
     S6_OVERLAY_VERSION = S6_OVERLAY_VERSION
+    S6_SHA256_NOARCH   = S6_SHA256_NOARCH
+    S6_SHA256_X86_64   = S6_SHA256_X86_64
+    S6_SHA256_AARCH64  = S6_SHA256_AARCH64
   }
 
   tags = [
